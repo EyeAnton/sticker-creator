@@ -172,13 +172,15 @@ async function upload(env, body, filename) {
   throw last;
 }
 
-// text-модели RunningHub без схемы ответа отвечают прозой (на китайском) — требуем голый JSON.
-const JSON_ONLY = "\n\nReply with ONLY the raw JSON object described above — no prose, no markdown, no other language. Write failureReason in English.";
+// text-модели RunningHub без схемы ответа отвечают прозой (на китайском): инструкция «только JSON» нужна короткой, в начале и в конце
+// (проверено живыми пробами: с длинным промптом одной припиской в конце g-25-pro отвечал по-китайски).
+const JSON_ONLY = "Reply with ONLY a raw JSON object, nothing else. English only. No prose, no markdown.";
+const QA_FORMAT = 'Now evaluate the attached image. Your entire reply must be exactly one JSON object in English, either {"status": 0} or {"status": 1, "failureReason": "<short English reason>"}. Do not write anything else, no Chinese.';
 
 function payloadOf(env, kind, input) {
-  if (kind === "validate") return { prompt: prompts.validate + "\n\nAnalyze the attached image and output the JSON result." + JSON_ONLY, imageUrl: input.image };
+  if (kind === "validate") return { prompt: `${JSON_ONLY}\n\n${prompts.validate}\n\n${JSON_ONLY}`, imageUrl: input.image };
   // QA по одной картинке (результат): сравнения с base нет
-  if (kind === "qa") return { prompt: prompts.qa_single + "\n\nEvaluate the attached sticker image and output the JSON result." + JSON_ONLY, imageUrl: input.image2 };
+  if (kind === "qa") return { prompt: `You must answer in English with a single raw JSON object and nothing else.\n\n${prompts.qa_single}\n\n${QA_FORMAT}`, imageUrl: input.image2 };
   return { imageUrls: [input.image], prompt: input.prompt, resolution: env.RH_RESOLUTION || "1k", aspectRatio: "1:1" };
 }
 

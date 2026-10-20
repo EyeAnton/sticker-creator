@@ -6,11 +6,11 @@ Endpoint'ы и resolution — vars в `wrangler.toml` (канал «低价渠道
 
 | Этап | Var | Endpoint | Поля | Цена, ¥/запуск (ориентир) |
 |---|---|---|---|---|
-| validate | `RH_VALIDATE` | `rhart-text-g-25-pro/image-to-text` | `prompt` = `prompts.validate`, `imageUrl` (строка) | 0.02 |
+| validate | `RH_VALIDATE` | `rhart-text-g-25-flash/image-to-text` | `prompt` = `prompts.validate`, `imageUrl` (строка) | 0.02 |
 | restyle | `RH_RESTYLE` | `rhart-image-n-pro/edit` | `imageUrls` [фото], `prompt`, `resolution` (`RH_RESOLUTION`, 1k), `aspectRatio` 1:1 | 0.40 (1k) |
 | emotion fast | `RH_EMOTION_FAST` | `rhart-image-n-g31-flash/image-to-image` | `imageUrls` [base], `prompt`, `resolution`, `aspectRatio` 1:1 | 0.19 (1k) |
 | emotion pro | `RH_EMOTION_PRO` | `rhart-image-n-pro/edit` | как restyle | 0.40 (1k) |
-| qa | `RH_QA` | `rhart-text-g-25-pro/image-to-text` | `prompt` = `prompts.qa_single` (критерии 1–2) + задание, `imageUrl` = результат | 0.02 |
+| qa | `RH_QA` | `rhart-text-g-25-flash/image-to-text` | `prompt` = `prompts.qa_single` (критерии 1–2) + задание, `imageUrl` = результат | 0.02 |
 
 QA без проверки сходства с исходником — решение пользователя (дешевле, ¥0.02): одна картинка, только зелёный фон и белая обводка; `qa_single` строит `tools/extract_prompts.py` из `qa` (критерий 3 убран).
 

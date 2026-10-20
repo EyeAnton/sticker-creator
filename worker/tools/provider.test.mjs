@@ -132,6 +132,8 @@ await assert.rejects(fetchImage(env, "https://runninghub.ai.evil.com/x.png"), /n
 handler = () => new Response("png", { headers: { "Content-Type": "image/png" } });
 assert.equal((await fetchImage(env, "https://rh.runninghub.ai/a.png")).status, 200);
 assert.equal((await fetchImage({ ...env, RH_IMG_HOSTS: "cdn.example" }, "https://x.cdn.example/a.png")).status, 200);
+assert.equal((await fetchImage({ ...env, RH_IMG_HOSTS: "rh-hk-images-1.cos.ap-hongkong.myqcloud.com" }, "https://rh-hk-images-1.cos.ap-hongkong.myqcloud.com/a.jpg")).status, 200);
+await assert.rejects(fetchImage({ ...env, RH_IMG_HOSTS: "rh-hk-images-1.cos.ap-hongkong.myqcloud.com" }, "https://other-bucket.cos.ap-hongkong.myqcloud.com/a.jpg"), /not allowed/);
 handler = () => new Response(null, { status: 302, headers: { Location: "https://evil.example/x" } });
 await assert.rejects(fetchImage(env, "https://rh.runninghub.ai/a.png"), /not allowed/);
 
