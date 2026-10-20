@@ -9,7 +9,7 @@ export const FORCE_INAPP = q.has('inapp');
 const local = ['localhost', '127.0.0.1'].includes(location.hostname);
 export const API_BASE = local
   ? 'http://localhost:8787'
-  : 'https://sticker-creator.REPLACE-ME.workers.dev'; // впишется после деплоя Worker'а
+  : 'https://sticker-creator.leritosha.workers.dev';
 
 export const LIBS = {
   mediapipe: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14',
