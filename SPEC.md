@@ -1,10 +1,10 @@
 # SPEC — Sticker Creator
 
 Посетитель портфолио загружает фото и получает стикерпак: базовый стикер (рестайл портрета) + выбранные эмоции.
-Это перенос сценариев Make «Social3.0-SC» (сырьё: `~/Downloads/Portfolio/Social3.0-SC-blueprints`, в git не входит). Gemini заменяется на RunningHub; Make, GCP-бакет, data store и Google Sheets выкидываются. **Логику повторов и проверок сохраняем как в блюпринтах** (ниже — «Пайплайн»).
+Это перенос сценариев Make «Social3.0-SC» (сырьё: `~/Downloads/Portfolio/Social3.0-SC-blueprints`, в git не входит). Gemini вызывается через Replicate (те же модели Google); Make, GCP-бакет, data store и Google Sheets выкидываются. **Логику повторов и проверок сохраняем как в блюпринтах** (ниже — «Пайплайн»).
 
 ```
-браузер (GitHub Pages)                        Worker (Cloudflare)                      RunningHub
+браузер (GitHub Pages)                        Worker (Cloudflare)                      Replicate
  фото → 1 лицо? (MediaPipe) → кроп 1024 ──POST /api/jobs──▶ капча, лимиты, отклонённые ──▶ validate
  опрос каждые 4 с      ◀──GET /api/jobs/:id──  двигает этапы при опросе  ◀─────────── статусы
                                                validate ok → restyle → emotion×N (+qa)
@@ -71,7 +71,7 @@
 
 ## Задача (KV `JOBS`, ключ `job:<jobId>`, TTL 24 ч)
 ```json
-{ "created": 1760000000, "gender": "", "photoHash": "…", "photoRef": "<ref в RunningHub>",
+{ "created": 1760000000, "gender": "", "photoHash": "…", "photoRef": "<ref в Replicate>",
   "stage": "emotions", "validate": {"task": "…"}, "restyleRetry": 0,
   "stickers": { "base": {"task": "…", "state": "done", "url": "…"},
                 "wink": {"state": "running", "attempt": 2, "model": "fast", "phase": "qa",
@@ -79,7 +79,7 @@
 ```
 `jobId` = `crypto.randomUUID()` — он же доступ к задаче. Worker двигает этапы при каждом `GET` (состояние только в KV, без фоновых процессов). Опрос клиента последовательный; защита от двойного старта — проверка, что задача текущей фазы ещё не создана.
 
-## RunningHub — адаптер `worker/src/runninghub.js`
+## Провайдер (Replicate) — адаптер `worker/src/provider.js`
 ```js
 uploadImage(env, body, filename) → ref
 startTask(env, kind, input) → taskId
@@ -90,24 +90,25 @@ startTask(env, kind, input) → taskId
 getTask(env, taskId) → { state: "queued"|"running"|"done"|"failed", url?, text?, refused?, error? }
 ```
 `refused: true` — модель отработала, но картинки нет (отказ по политике) — это отличает «отказ» от «ошибки» для `nextModel`.
-Реализации по `env.RH_MODE`: **`stub`** — без сети: задача готова через ~6 с (время старта зашито в taskId), validate/qa → `{"status":0}`, картинки — встроенный тестовый PNG 1024×1024 (зелёный #00FF00 фон, белый круг-«стикер»); для проверки веток — спецзначения: `gender=stub-reject` → validate отклоняет, эмоция `demon` в stub первые 2 раза получает отказ QA. **`live`** — настоящие вызовы (задача #3, данные — `worker/RUNNINGHUB.md`).
+Реализации по `env.PROVIDER_MODE`: **`stub`** — без сети: задача готова через ~6 с (время старта зашито в taskId), validate/qa → `{"status":0}`, картинки — встроенный тестовый PNG 1024×1024 (зелёный #00FF00 фон, белый круг-«стикер»); для проверки веток — спецзначения: `gender=stub-reject` → validate отклоняет, эмоция `demon` в stub первые 2 раза получает отказ QA. **`live`** — настоящие вызовы (задача #5, модели — `worker/PROVIDER.md`).
 
 Промпты — только на сервере: `worker/prompts.json` (не в git; `python3 -I tools/extract_prompts.py <папка блюпринтов>`), ключи `validate`, `restyle`, `emotions[]`, `qa`. Клиент промптов не видит и не передаёт.
 
 ## Лимиты и безопасность (Worker)
-- Секреты (`wrangler secret put`): `RUNNINGHUB_API_KEY`, `TURNSTILE_SECRET`, `IP_SALT`. Никогда не попадают в ответы и логи.
-- Vars (`wrangler.toml`): `RH_MODE`, `ALLOWED_ORIGINS="https://eyeanton.github.io,http://localhost:8000"`, `MAX_EMOTIONS=6`, `PER_IP_DAY=2`, `GLOBAL_DAY=30`, `TURNSTILE_SITE_KEY`.
+- Секреты (`wrangler secret put`): `REPLICATE_API_TOKEN`, `TURNSTILE_SECRET`, `IP_SALT`. Никогда не попадают в ответы и логи.
+- Vars (`wrangler.toml`): `PROVIDER_MODE`, `ALLOWED_ORIGINS="https://eyeanton.github.io,http://localhost:8000"`, `MAX_EMOTIONS=6`, `PER_IP_DAY=2`, `GLOBAL_DAY=30`, `RUNS_DAY=400`, `TURNSTILE_SITE_KEY`.
+- `RUNS_DAY` — жёсткий потолок вызовов провайдера в сутки (все виды: validate, restyle, emotion, qa), счётчик `runs:<YYYY-MM-DD>`. Достигнут → новые паки `503 closed`, у начатых паков недоделанные стикеры `failed` (без новых вызовов). Это главный предохранитель по деньгам, независимо от повторов.
 - POST: `Origin` ∈ `ALLOWED_ORIGINS`, Turnstile (`siteverify`), размер ≤ 1.5 МБ, первые байты JPEG (`FF D8 FF`), emotions — белый список, проверка «отклонённых» по sha256 (`crypto.subtle.digest`).
 - Счётчики в KV `JOBS`: `ip:<sha256(ip+IP_SALT)>:<YYYY-MM-DD>` и `global:<YYYY-MM-DD>`, TTL 2 дня; списываются при успешном старте. IP — из `CF-Connecting-IP`, в KV только хэш.
-- Ошибки RunningHub наружу не отдаём сырыми — только код и общий текст. `failureReason` validate — показываем (он для пользователя), но обрезаем до 200 символов.
-- Локально: `worker/.dev.vars` (не в git) с тестовыми ключами Turnstile `1x00000000000000000000AA` / `1x0000000000000000000000000000000AA`, `RH_MODE=stub`, `IP_SALT=dev`.
+- Ошибки Replicate наружу не отдаём сырыми — только код и общий текст. `failureReason` validate — показываем (он для пользователя), но обрезаем до 200 символов.
+- Локально: `worker/.dev.vars` (не в git) с тестовыми ключами Turnstile `1x00000000000000000000AA` / `1x0000000000000000000000000000000AA`, `PROVIDER_MODE=stub`, `IP_SALT=dev`.
 - CPU-лимит бесплатного тарифа 10 мс: картинки не декодировать и не перекодировать, только стримить.
 
 ## Страница (корень репо, без сборки)
 `index.html`, `css/style.css`, `js/config.js`, `js/app.js` (экраны и опрос), `js/face.js` (MediaPipe), `js/crop.js` (кроп, ручной фолбэк), `js/chroma.js` (зелёный → альфа), `js/share.js` (Поделиться/ZIP).
 
 Экраны:
-1. **Фото** — `<input type=file accept="image/*">` (галерея или камера). Строка о приватности: «Фото отправляется в RunningHub только для генерации и не хранится».
+1. **Фото** — `<input type=file accept="image/*">` (галерея или камера). Строка о приватности: «Фото отправляется в Replicate только для генерации и не хранится».
 2. **Подготовка** — сначала уменьшить фото до ≤ 2048 по длинной стороне (`createImageBitmap` с resize; лимит canvas на iOS). MediaPipe Face Detector (`@mediapipe/tasks-vision`, точная версия с jsdelivr): лиц 0 или >1 → понятное сообщение, дальше не пускать (это быстрая предпроверка, настоящая модерация — validate на сервере). Кроп как в оригинале (crop_face `square=true`, `padding=0.08`): квадрат по рамке лица с запасом, чтобы влезли волосы и плечи — рамка MediaPipe ýже, чем у Google Vision, коэффициент подобрать на нескольких фото; ограничить краями → 1024×1024 JPEG q≈0.9 (перекодирование убирает EXIF). Модель не загрузилась → ручной кроп пальцем/мышью (перетащить, масштаб). Выбор эмоций (чипы, ≤ `maxEmotions`), пол (необязательно), Turnstile, кнопка «Сделать стикеры».
 3. **Генерация** — этап словами («Проверяем фото» → «Рисуем базовый стикер» → «Эмоции»), сетка карточек-заглушек, заполняются по мере готовности, общий прогресс-бар (готово N из M), у эмоции на повторной попытке — «попытка 2». `jobId` в `localStorage["sc.job"]` (с датой): при возврате на страницу опрос продолжается; `visibilitychange` → сразу опрос. `rejected` → причина + «Выбрать другое фото».
 4. **Результат** — каждая картинка: зелёный (#00FF00) → прозрачность с подавлением зелёной каймы (despill; у краёв бывает тёмно-зелёная тень — тоже убрать), белая обводка сохраняется, 512×512 PNG. На телефоне «Поделиться» (`navigator.share({files})` → Фото / Telegram), на компьютере «Скачать всё» (ZIP, JSZip точной версии) и по одной. Во встроенных браузерах (Telegram, Instagram — по user agent) подсказка «Откройте в браузере».
