@@ -1,6 +1,6 @@
 # sticker-creator — карта проекта
 
-Генератор стикерпака по фото для портфолио: https://eyeanton.github.io/sticker-creator/ (GitHub Pages с `main`) + Cloudflare Worker-прокси к Replicate (проверка) и RunningHub (генерация).
+Генератор стикерпака по фото для портфолио: https://eyeanton.github.io/sticker-creator/ (GitHub Pages с `main`) + Cloudflare Worker-прокси к RunningHub Standard Model API.
 **Контракт, пайплайн, лимиты — в `SPEC.md`. Читай его, а не блюпринты.** Блюпринты Make лежат вне репо (`~/Downloads/Portfolio/Social3.0-SC-blueprints`) и нужны только `tools/extract_prompts.py`.
 
 ## Где что
@@ -10,7 +10,7 @@
 | Адрес Worker'а для страницы | `js/config.js` |
 | Worker: роуты, лимиты, капча | `worker/src/index.js` |
 | Этапы и повторы (validate → restyle → emotion + qa, `nextModel`) | `worker/src/pipeline.js` |
-| Провайдеры Replicate + RunningHub (маршруты ROUTES, stub / live) | `worker/src/provider.js`, модели — `worker/PROVIDER.md` |
+| Провайдер RunningHub (stub / live), endpoint'ы — vars `RH_*` в `wrangler.toml` | `worker/src/provider.js`, модели — `worker/PROVIDER.md` |
 | Промпты | `worker/prompts.json` — **не в git** (репо публичный), делается `python3 -I tools/extract_prompts.py <папка блюпринтов>` |
 | Секреты локально | `worker/.dev.vars` — не в git |
 
