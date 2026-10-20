@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Стикерпак из фото</title>
+<meta name="description" content="Загрузите фото — получите стикерпак с вашим портретом и эмоциями.">
+<link rel="stylesheet" href="https://eyeanton.github.io/design-system.css">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<main class="wrap">
+  <header class="head">
+    <p class="eyebrow">Sticker Creator</p>
+    <h1 class="t-h2">Стикерпак из&nbsp;фото</h1>
+    <p class="t-lead" id="lead">Загрузите портрет, выберите эмоции — через пару минут стикеры готовы для Telegram и мессенджеров.</p>
+  </header>
+
+  <p class="notice warn" id="unsupported" hidden>Обновите браузер: этой странице нужны современные возможности (createImageBitmap, fetch).</p>
+  <p class="notice warn" id="inapp" hidden>Вы открыли страницу во встроенном браузере приложения. Скачивание и «Поделиться» там могут не работать — откройте страницу в Safari или Chrome (меню «⋯» → «Открыть в браузере»).</p>
+
+  <!-- 1. Фото -->
+  <section class="screen" id="s-photo" aria-labelledby="h-photo">
+    <h2 class="h" id="h-photo">1. Фото</h2>
+    <div class="surface pad">
+      <p class="closed" id="closed" hidden>На сегодня лимит паков исчерпан. Загляните завтра.</p>
+      <label class="btn drop" id="pick">
+        <input type="file" id="file" accept="image/*">
+        Выбрать фото
+      </label>
+      <p class="hint">Подойдёт портрет, где виден один человек. Можно сделать снимок камерой.</p>
+      <p class="hint" id="left" hidden></p>
+      <p class="hint privacy">Фото отправляется в Replicate только для генерации и не хранится.</p>
+    </div>
+  </section>
+
+  <!-- 2. Подготовка -->
+  <section class="screen" id="s-prep" aria-labelledby="h-prep" hidden>
+    <h2 class="h" id="h-prep">2. Подготовка</h2>
+    <p class="notice" id="prep-msg" role="status">Проверяем фото…</p>
+
+    <div id="prep-body" hidden>
+      <div class="surface pad">
+        <div class="crop-view" id="crop-view">
+          <canvas id="crop-canvas" width="640" height="640" aria-label="Кадр для стикера"></canvas>
+        </div>
+        <div class="zoom" id="zoom-row" hidden>
+          <label for="zoom">Масштаб</label>
+          <input type="range" id="zoom" min="1" max="4" step="0.01" value="1">
+        </div>
+        <p class="hint" id="crop-hint"></p>
+        <button type="button" class="btn quiet small" id="manual-btn">Подправить кадр</button>
+      </div>
+
+      <div class="surface pad" id="opts">
+        <h3 class="sub">Эмоции <span class="muted" id="emo-count"></span></h3>
+        <div class="chips" id="emotions" role="group" aria-label="Эмоции"></div>
+        <h3 class="sub">Пол <span class="muted">необязательно</span></h3>
+        <div class="chips" id="gender" role="radiogroup" aria-label="Пол">
+          <button type="button" class="chip on" role="radio" aria-checked="true" data-v="">Не указывать</button>
+          <button type="button" class="chip" role="radio" aria-checked="false" data-v="female">Женский</button>
+          <button type="button" class="chip" role="radio" aria-checked="false" data-v="male">Мужской</button>
+        </div>
+        <div id="turnstile"></div>
+        <p class="notice warn" id="submit-err" role="alert" hidden></p>
+        <button type="button" class="btn go" id="go" disabled>Сделать стикеры</button>
+      </div>
+    </div>
+    <button type="button" class="btn quiet" id="prep-back" hidden>Выбрать другое фото</button>
+  </section>
+
+  <!-- 3. Генерация -->
+  <section class="screen" id="s-gen" aria-labelledby="h-gen" hidden>
+    <h2 class="h" id="h-gen">3. Генерация</h2>
+    <p class="stage" id="stage" role="status">Проверяем фото</p>
+    <div class="bar" id="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="bar-fill"></i></div>
+    <p class="hint" id="bar-text"></p>
+    <p class="notice warn" id="net" hidden>Связь пропала, пробуем ещё раз…</p>
+    <div class="grid" id="gen-grid"></div>
+    <div class="surface pad" id="gen-end" hidden>
+      <p id="gen-end-msg"></p>
+      <button type="button" class="btn" id="gen-again">Выбрать другое фото</button>
+    </div>
+    <p class="hint" id="gen-keep">Страницу можно закрыть и вернуться — стикеры никуда не денутся (до суток).</p>
+  </section>
+
+  <!-- 4. Результат -->
+  <section class="screen" id="s-result" aria-labelledby="h-result" hidden>
+    <h2 class="h" id="h-result">4. Готово</h2>
+    <p class="hint" id="res-note" hidden></p>
+    <div class="actions">
+      <button type="button" class="btn" id="share-btn" hidden>Поделиться</button>
+      <button type="button" class="btn" id="zip-btn">Скачать всё (ZIP)</button>
+      <button type="button" class="btn quiet" id="again-btn">Сделать ещё</button>
+    </div>
+    <p class="notice warn" id="res-err" role="alert" hidden></p>
+    <div class="grid res" id="res-grid"></div>
+  </section>
+
+  <footer class="foot hint">Прозрачные PNG 512×512. Сгенерировано нейросетью: возможны неточности.</footer>
+</main>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
