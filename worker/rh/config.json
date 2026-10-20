@@ -1,0 +1,9 @@
+{
+  "host": "https://www.runninghub.ai",
+  "publicOutputUrls": true,
+  "stages": {
+    "restyle":      { "workflowId": null, "image": { "nodeId": null, "fieldName": "image" }, "prompt": { "nodeId": null, "fieldName": "text" }, "output": { "nodeId": null }, "extra": [] },
+    "emotion_fast": { "workflowId": null, "image": { "nodeId": null, "fieldName": "image" }, "prompt": { "nodeId": null, "fieldName": "text" }, "output": { "nodeId": null }, "extra": [] },
+    "emotion_pro":  { "workflowId": null, "image": { "nodeId": null, "fieldName": "image" }, "prompt": { "nodeId": null, "fieldName": "text" }, "output": { "nodeId": null }, "extra": [] }
+  }
+}
