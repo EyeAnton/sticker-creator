@@ -11,13 +11,16 @@ ROUTES = "validate=replicate,qa=replicate,restyle=runninghub,emotion=runninghub"
 
 | Этап | Провайдер | В блюпринте (Gemini API) | Модель / workflow | Вход | Выход |
 |---|---|---|---|---|---|
-| validate | Replicate | gemini-2.5-pro | vision-LLM Google на Replicate (gemini-2.5-pro / -flash — проверить) | фото + `prompts.validate` | текст JSON |
+| validate | Replicate | gemini-2.5-pro | `google/gemini-2.5-flash` на Replicate (по умолчанию; `REPLICATE_MODEL=google/gemini-2.5-pro` переопределяет) | фото + `prompts.validate` | текст JSON |
 | qa | Replicate | gemini-2.5-pro, temperature 0.2 | та же | base + результат + `prompts.qa` | текст JSON |
 | restyle | RunningHub | gemini-3-pro-image-preview | workflow из `worker/rh/restyle.json` | фото + `prompts.restyle` | картинка 1:1 |
 | emotion `fast` | RunningHub | gemini-2.5-flash-image | workflow из `worker/rh/emotion_fast.json` | base + промпт эмоции | картинка 1:1 |
 | emotion `pro` | RunningHub | gemini-3-pro-image-preview | workflow из `worker/rh/emotion_pro.json` (или тот же с переключателем) | base + промпт эмоции | картинка 1:1 |
 
-Данные RunningHub (заполняет пользователь): JSON workflow (API-формат) в `worker/rh/`, плюс в `worker/rh/README.md` — workflowId/webappId, nodeId+fieldName для картинки и промпта, узел результата, домен API (`www.runninghub.ai` или `.cn`).
+### Replicate: вход и цена
+`POST /v1/models/google/gemini-2.5-flash/predictions`, `input`: `prompt`, `system_instruction` (= промпт validate/qa), `images` (массив URL: Files API `urls.get` или результат RunningHub), `temperature` (0.2 для qa). Выход — массив строк, склеивается. Цена по агрегаторам ≈ $0.30/1M токенов на вход, $2.50/1M на выход (сверить на странице модели; страница схемы без токена не читалась — имена полей `images`/`system_instruction` проверить первым живым прогоном).
+
+Данные RunningHub (заполняет пользователь, формат — `worker/rh/README.md`, читается из `worker/rh/config.json`): JSON workflow (API-формат) в `worker/rh/`, плюс в `worker/rh/README.md` — workflowId/webappId, nodeId+fieldName для картинки и промпта, узел результата, домен API (`www.runninghub.ai` или `.cn`).
 
 ## Как устроено в `worker/src/provider.js`
 - Один интерфейс (`uploadImage/startTask/getTask/fetchImage`), внутри — роутер по `kind` → `replicate` | `runninghub` | `stub`.
