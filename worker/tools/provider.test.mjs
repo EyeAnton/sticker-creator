@@ -15,7 +15,7 @@ const env = {
   PROVIDER_MODE: "live",
   RH_API_BASE_URL: "https://www.runninghub.ai/openapi/v2/",
   RUNNINGHUB_API_KEY: "h-secret",
-  RH_VALIDATE: "v/val", RH_RESTYLE: "r/restyle", RH_EMOTION_FAST: "e/fast", RH_EMOTION_PRO: "e/pro", RH_QA: "q/chat", RH_RESOLUTION: "1k",
+  RH_VALIDATE: "v/val", RH_RESTYLE: "r/restyle", RH_EMOTION_FAST: "e/fast", RH_EMOTION_PRO: "e/pro", RH_QA: "q/qa", RH_RESOLUTION: "1k",
   JOBS: { put: async (k, v) => void kv.set(k, v), get: async (k) => kv.get(k) },
 };
 const body = new Uint8Array([0xff, 0xd8, 0xff, 1, 2]).buffer;
@@ -51,8 +51,9 @@ assert.match(calls.at(-1).url, /e\/fast$/);
 await startTask(env, "emotion", { image: url, prompt: "p", model: "pro" });
 assert.match(calls.at(-1).url, /e\/pro$/);
 await startTask(env, "qa", { image1: "https://a/1.png", image2: "https://a/2.png" });
-assert.match(calls.at(-1).url, /q\/chat$/);
-assert.deepEqual(sent().imageUrls, ["https://a/1.png", "https://a/2.png"]);
+assert.match(calls.at(-1).url, /q\/qa$/);
+assert.equal(sent().imageUrl, "https://a/2.png");
+assert.ok(!("imageUrls" in sent()) && !/Image 1/.test(sent().prompt));
 assert.ok(sent().prompt.length > 100);
 
 // submit: code≠0 с HTTP 200 → ошибка, без повтора; errorCode/errorMessage тоже

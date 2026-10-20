@@ -10,7 +10,9 @@ Endpoint'ы и resolution — vars в `wrangler.toml` (канал «低价渠道
 | restyle | `RH_RESTYLE` | `rhart-image-n-pro/edit` | `imageUrls` [фото], `prompt`, `resolution` (`RH_RESOLUTION`, 1k), `aspectRatio` 1:1 | 0.40 (1k) |
 | emotion fast | `RH_EMOTION_FAST` | `rhart-image-n-g31-flash/image-to-image` | `imageUrls` [base], `prompt`, `resolution`, `aspectRatio` 1:1 | 0.19 (1k) |
 | emotion pro | `RH_EMOTION_PRO` | `rhart-image-n-pro/edit` | как restyle | 0.40 (1k) |
-| qa | `RH_QA` | `rhart-text-qwen-27b/chat` | `prompt` = `prompts.qa` + задание, `imageUrls` [base, результат] | 0.10 |
+| qa | `RH_QA` | `rhart-text-g-25-pro/image-to-text` | `prompt` = `prompts.qa_single` (критерии 1–2) + задание, `imageUrl` = результат | 0.02 |
+
+QA без проверки сходства с исходником — решение пользователя (дешевле, ¥0.02): одна картинка, только зелёный фон и белая обводка; `qa_single` строит `tools/extract_prompts.py` из `qa` (критерий 3 убран).
 
 Цены из `pricing.public.json` (обновлено 2026-04-29) — **только ориентир**, не биллинг; сверять на сайте RunningHub.
 
@@ -21,4 +23,4 @@ Endpoint'ы и resolution — vars в `wrangler.toml` (канал «低价渠道
 - Статусы: `CREATE`/`QUEUED`/`RUNNING` → queued/running; `SUCCESS` → done (`results[].url|outputUrl`, текст — `text|content|output`); `FAILED`/`CANCEL` → `refused`, если сообщение про policy/moderation/safety/NSFW/violation/forbidden, иначе обычная ошибка (сбой дешёвого канала не переключает модель зря). Таймаут задачи — 10 мин (время старта зашито в taskId `rh:<мс>:<taskId>`).
 - Код и текст (≤300) ошибки провайдера — в KV `taskerr:<taskId>` (TTL 2 сут), клиенту не отдаются.
 - `fetchImage` — только хосты `runninghub.ai`/`.cn` и поддомены (+ var `RH_IMG_HOSTS`), редиректы вручную по тому же списку; иначе `/img` стал бы открытым прокси.
-- Результаты передаются в следующие этапы по URL (base → emotion и qa) без перекладки.
+- Результаты передаются в следующие этапы по URL (base → emotion) без перекладки.

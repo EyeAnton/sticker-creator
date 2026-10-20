@@ -177,12 +177,8 @@ const JSON_ONLY = "\n\nReply with ONLY the raw JSON object described above — n
 
 function payloadOf(env, kind, input) {
   if (kind === "validate") return { prompt: prompts.validate + "\n\nAnalyze the attached image and output the JSON result." + JSON_ONLY, imageUrl: input.image };
-  if (kind === "qa") {
-    return {
-      prompt: prompts.qa + "\n\nImage 1 is the source reference photo, Image 2 is the generated sticker. Output the JSON result." + JSON_ONLY,
-      imageUrls: [input.image1, input.image2],
-    };
-  }
+  // QA по одной картинке (результат): сравнения с base нет
+  if (kind === "qa") return { prompt: prompts.qa_single + "\n\nEvaluate the attached sticker image and output the JSON result." + JSON_ONLY, imageUrl: input.image2 };
   return { imageUrls: [input.image], prompt: input.prompt, resolution: env.RH_RESOLUTION || "1k", aspectRatio: "1:1" };
 }
 

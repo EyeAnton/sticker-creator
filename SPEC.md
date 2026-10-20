@@ -21,7 +21,7 @@
 | **validate** (1.0) | Gemini 2.5 Pro, промпт `prompts.validate` | кроп фото | JSON `{"status":0}` | `status≠0` → пак отклонён, `failureReason` показываем пользователю, фото в «отклонённые»; ошибка запроса / нечитаемый JSON → `upstream` (не отклонённое) |
 | **restyle** (2.1) | Gemini 3 Pro Image, `prompts.restyle` (`{gender}`) | кроп фото | есть картинка → стикер `base` | ошибка запроса → пауза 5 с, **один** повтор; ответ без картинки (отказ модели) → пак `failed`, фото в «отклонённые» |
 | **emotion** (2.0/2.2) | см. попытки ниже, `prompts.emotions[i]` | картинка `base` | картинка + QA ok | после 4 попыток → стикер `failed`, пак продолжается |
-| **qa** (2.2.1) | Gemini 2.5 Pro, temperature 0.2, `prompts.qa` | image1 = `base`, image2 = результат | JSON `{"status":0}` | `status≠0` или нечитаемый JSON → попытка неудачна |
+| **qa** (2.2.1) | `rhart-text-g-25-pro/image-to-text`, `prompts.qa_single` (без критерия сходства — решение пользователя) | только результат (`image2`; `image1` провайдером не используется) | JSON `{"status":0}` | `status≠0` или нечитаемый JSON → попытка неудачна |
 
 Эмоции стартуют все сразу (параллельно), но **внутри одной эмоции попытки идут по очереди до первого успеха**, максимум 4. Попытка неудачна, если: ошибка запроса; модель не отдала картинку (отказ по политике / `finishReason ≠ STOP`); QA отклонил; ответ QA не разобрать.
 Выбор модели для следующей попытки (уточнено пользователем, отличается от блюпринта, где порядок жёсткий `fast, fast, pro, pro`):
@@ -92,7 +92,7 @@ getTask(env, taskId) → { state: "queued"|"running"|"done"|"failed", url?, text
 `refused: true` — модель отработала, но картинки нет (отказ по политике) — это отличает «отказ» от «ошибки» для `nextModel`.
 Реализации по `env.PROVIDER_MODE`: **`stub`** — без сети: задача готова через ~6 с (время старта зашито в taskId), validate/qa → `{"status":0}`, картинки — встроенный тестовый PNG 1024×1024 (зелёный #00FF00 фон, белый круг-«стикер»); для проверки веток — спецзначения: `gender=stub-reject` → validate отклоняет, эмоция `demon` в stub первые 2 раза получает отказ QA. **`live`** — RunningHub: upload → submit → `/query` (модели и поля — `worker/PROVIDER.md`). Таймаут задачи 10 мин, повтор только сеть/429/5xx; причина сбоя провайдера — в KV `taskerr:<taskId>`, клиенту не отдаётся.
 
-Промпты — только на сервере: `worker/prompts.json` (не в git; `python3 -I tools/extract_prompts.py <папка блюпринтов>`), ключи `validate`, `restyle`, `emotions[]`, `qa`. Клиент промптов не видит и не передаёт.
+Промпты — только на сервере: `worker/prompts.json` (не в git; `python3 -I tools/extract_prompts.py <папка блюпринтов>`), ключи `validate`, `restyle`, `emotions[]`, `qa`, `qa_single`. Клиент промптов не видит и не передаёт.
 
 ## Лимиты и безопасность (Worker)
 - Секреты (`wrangler secret put`): `RUNNINGHUB_API_KEY`, `TURNSTILE_SECRET`, `IP_SALT`. Никогда не попадают в ответы и логи.
