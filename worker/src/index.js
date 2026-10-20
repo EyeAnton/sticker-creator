@@ -10,7 +10,8 @@ const TEXT = {
   origin: "Запрос с этого адреса не разрешён.",
   too_large: "Фото слишком большое.",
   rejected: "Это фото уже не подошло. Выберите другое.",
-  limit: "На сегодня вы исчерпали лимит стикерпаков. Приходите завтра.",
+  limit: "С этого устройства пак уже сделан.",
+  busy: "Пак уже делается.",
   closed: "На сегодня лимит генераций исчерпан. Загляните завтра.",
   upstream: "Сервис генерации сейчас недоступен. Попробуйте чуть позже.",
   not_found: "Задача не найдена или устарела.",
@@ -49,10 +50,17 @@ async function sha256Hex(data) {
   return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-function secondsToMidnight() {
-  const n = new Date();
-  const next = Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate() + 1);
-  return Math.max(60, Math.ceil((next - n.getTime()) / 1000));
+const DEVICE_RE = /^[\w-]{16,64}$/;
+const DEVICE_TTL = 365 * 86400;
+const IP_TTL = 2 * 86400;
+const RESERVE_GRACE_MS = 120 * 1000; // между бронью и записью задачи в KV
+
+async function count(env, key) {
+  return Number(await env.JOBS.get(key)) || 0;
+}
+
+async function deviceKey(env, device) {
+  return "dev:" + (await sha256Hex(device + env.IP_SALT));
 }
 
 async function ipKey(request, env) {
@@ -60,8 +68,93 @@ async function ipKey(request, env) {
   return `ip:${await sha256Hex(ip + env.IP_SALT)}:${today()}`;
 }
 
-async function count(env, key) {
-  return Number(await env.JOBS.get(key)) || 0;
+async function readList(env, key) {
+  const raw = await env.JOBS.get(key);
+  if (!raw) return [];
+  try {
+    const v = JSON.parse(raw);
+    return Array.isArray(v) ? v : [v];
+  } catch {
+    return [];
+  }
+}
+
+// Исход пака: "ok" — удачный (база и хотя бы одна эмоция), "fail" — неудачный, null — ещё идёт.
+function outcome(job) {
+  if (job.stage === "rejected" || job.stage === "failed") return "fail";
+  if (job.stage !== "done") return null;
+  const ok = job.stickers.base.state === "done" && Object.entries(job.stickers).some(([id, s]) => id !== "base" && s.state === "done");
+  return ok ? "ok" : "fail";
+}
+
+// Бронь → "final" (удачный пак), "busy" (идёт), "free" (снята). Фиксирует исход, если задача уже завершилась.
+async function resolveEntry(env, e) {
+  if (e.state === "final") return "final";
+  const job = await loadJob(env, e.jobId);
+  if (!job) return Date.now() - e.t < RESERVE_GRACE_MS ? "busy" : "free"; // задача пропала из KV — бронь снята
+  const o = outcome(job);
+  if (o === "ok") return "final";
+  if (o === "fail") return "free";
+  return "busy";
+}
+
+// Что мешает новому паку: "limit" | "busy" | null. Заодно чистит снятые брони.
+async function blocker(env, devKey, ipK) {
+  let res = null;
+  const dev = await readList(env, devKey);
+  if (dev.length) {
+    const r = await resolveEntry(env, dev[0]);
+    if (r === "final") res = "limit";
+    else if (r === "busy") res = "busy";
+    else await env.JOBS.delete(devKey);
+  }
+  if (res) return res;
+  const ips = await readList(env, ipK);
+  const kept = [];
+  let busy = false;
+  for (const e of ips) {
+    const r = await resolveEntry(env, e);
+    if (r === "free") continue;
+    if (r === "busy") busy = true;
+    kept.push(e.state === "final" || r !== "final" ? e : { ...e, state: "final" });
+  }
+  if (kept.length !== ips.length) await env.JOBS.put(ipK, JSON.stringify(kept), { expirationTtl: IP_TTL });
+  if (kept.length >= Number(env.PER_IP_DAY)) return busy ? "busy" : "limit";
+  return null;
+}
+
+async function reserve(env, jobId, devKey, ipK) {
+  const e = { state: "reserved", jobId, t: Date.now() };
+  await env.JOBS.put(devKey, JSON.stringify([e]), { expirationTtl: DEVICE_TTL });
+  const ips = await readList(env, ipK);
+  await env.JOBS.put(ipK, JSON.stringify([...ips, e]), { expirationTtl: IP_TTL });
+}
+
+async function release(env, jobId, devKey, ipK) {
+  const dev = await readList(env, devKey);
+  if (dev.some((e) => e.jobId === jobId)) await env.JOBS.delete(devKey);
+  const ips = await readList(env, ipK);
+  const kept = ips.filter((e) => e.jobId !== jobId);
+  if (kept.length !== ips.length) await env.JOBS.put(ipK, JSON.stringify(kept), { expirationTtl: IP_TTL });
+}
+
+async function finalize(env, jobId, devKey, ipK) {
+  for (const [key, ttl] of [[devKey, DEVICE_TTL], [ipK, IP_TTL]]) {
+    const list = await readList(env, key);
+    if (list.some((e) => e.jobId === jobId && e.state !== "final")) {
+      await env.JOBS.put(key, JSON.stringify(list.map((e) => (e.jobId === jobId ? { ...e, state: "final" } : e))), { expirationTtl: ttl });
+    }
+  }
+}
+
+// Фиксирует исход пака (один раз): удачный → бронь окончательная, иначе снимается.
+async function settle(env, jobId, job) {
+  const o = outcome(job);
+  if (!o || job.settled || !job.devKey) return false;
+  job.settled = true;
+  if (o === "ok") await finalize(env, jobId, job.devKey, job.ipKey);
+  else await release(env, jobId, job.devKey, job.ipKey);
+  return true;
 }
 
 async function bump(env, key) {
@@ -86,13 +179,16 @@ async function isOpen(env) {
 }
 
 async function handleConfig(request, env) {
-  const left = Math.max(0, Number(env.PER_IP_DAY) - (await count(env, await ipKey(request, env))));
+  const device = new URL(request.url).searchParams.get("device") || "";
+  const devKey = DEVICE_RE.test(device) ? await deviceKey(env, device) : "dev:none";
+  const block = await blocker(env, devKey, await ipKey(request, env));
   return json(request, env, {
     emotions: EMOTION_IDS,
     maxEmotions: Number(env.MAX_EMOTIONS),
     turnstileSiteKey: env.TURNSTILE_SITE_KEY,
     open: await isOpen(env),
-    leftToday: left,
+    canCreate: !block,
+    ...(block ? { reason: block } : {}),
   });
 }
 
@@ -109,6 +205,8 @@ async function handleCreate(request, env) {
   } catch {
     return err(request, env, 400, "bad_input");
   }
+  const device = String(form.get("device") || "");
+  if (!DEVICE_RE.test(device)) return err(request, env, 400, "bad_input");
   const photo = form.get("photo");
   if (!photo || typeof photo === "string") return err(request, env, 400, "bad_input");
   if (photo.size > MAX_PHOTO) return err(request, env, 413, "too_large");
@@ -137,20 +235,25 @@ async function handleCreate(request, env) {
 
   if (!(await isOpen(env))) return err(request, env, 503, "closed");
 
+  const devKey = await deviceKey(env, device);
   const ipK = await ipKey(request, env);
-  if ((await count(env, ipK)) >= Number(env.PER_IP_DAY)) return err(request, env, 429, "limit", { retryAfter: secondsToMidnight() });
+  const block = await blocker(env, devKey, ipK);
+  if (block) return err(request, env, 429, block);
 
   if (!(await spend(env))) return err(request, env, 503, "closed");
+  const jobId = crypto.randomUUID();
+  await reserve(env, jobId, devKey, ipK);
   let job;
   try {
     job = await createJob(env, { photo: bytes, photoHash, gender, emotions });
   } catch {
+    await release(env, jobId, devKey, ipK);
     return err(request, env, 502, "upstream");
   }
-  await bump(env, ipK);
+  job.devKey = devKey;
+  job.ipKey = ipK;
   await bump(env, "global:" + today());
 
-  const jobId = crypto.randomUUID();
   await env.JOBS.put("job:" + jobId, JSON.stringify(job), { expirationTtl: JOB_TTL });
   const { stage, stickers } = publicJob(jobId, job);
   return json(request, env, { jobId, stage, stickers }, 201);
@@ -165,7 +268,9 @@ async function handleStatus(request, env, jobId) {
   const job = await loadJob(env, jobId);
   if (!job) return err(request, env, 404, "not_found");
   try {
-    if (await advance(env, job)) await env.JOBS.put("job:" + jobId, JSON.stringify(job), { expirationTtl: JOB_TTL });
+    const changed = await advance(env, job);
+    const settled = await settle(env, jobId, job);
+    if (changed || settled) await env.JOBS.put("job:" + jobId, JSON.stringify(job), { expirationTtl: JOB_TTL });
   } catch {
     // ошибка провайдера на этом шаге — отдаём прежнее состояние, клиент опросит ещё раз
   }

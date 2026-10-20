@@ -27,4 +27,5 @@ GLOBAL_DAY = "10"
 RUNS_DAY = "200"
 TURNSTILE_SITE_KEY = "0x4AAAAAAFeAR4ZK98XyO54z"
 
+# Лимиты: один удачный пак на устройство (KV dev:…, 365 дней) + страховка по IP (1 пак в сутки)
 # Секреты (не здесь!): npx wrangler secret put RUNNINGHUB_API_KEY | TURNSTILE_SECRET | IP_SALT
