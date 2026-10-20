@@ -8,6 +8,15 @@ compatibility_date = "2026-09-01"
 binding = "JOBS"
 id = "fb4a46da3ba54c14b4732ed69e9819b4"
 
+# Атомарные счётчики (runs, global) и блокировки задач/IP — Durable Object (KV не атомарный)
+[[durable_objects.bindings]]
+name = "GATE"
+class_name = "Gate"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Gate"]
+
 [vars]
 PROVIDER_MODE = "live"
 RH_API_BASE_URL = "https://www.runninghub.ai/openapi/v2"

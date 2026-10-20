@@ -1,5 +1,7 @@
 import { EMOTION_IDS, createJob, advance, publicJob, spend, runsLeft, today } from "./pipeline.js";
 import { fetchImage } from "./provider.js";
+import { gate } from "./gate.js";
+export { Gate } from "./gate.js";
 
 const MAX_PHOTO = 1.5 * 1024 * 1024;
 const JOB_TTL = 24 * 3600;
@@ -54,17 +56,23 @@ const DEVICE_RE = /^[\w-]{16,64}$/;
 const DEVICE_TTL = 365 * 86400;
 const IP_TTL = 2 * 86400;
 const RESERVE_GRACE_MS = 120 * 1000; // между бронью и записью задачи в KV
-
-async function count(env, key) {
-  return Number(await env.JOBS.get(key)) || 0;
-}
+const LOCK_MS = 60 * 1000; // блокировка задачи/IP на время шага; падение Worker'а — снимется сама
 
 async function deviceKey(env, device) {
   return "dev:" + (await sha256Hex(device + env.IP_SALT));
 }
 
+// IPv6 — по сети /64: у одного абонента их миллиарды адресов, иначе страховка по IP обходится сменой адреса.
+function ipNet(ip) {
+  if (!ip.includes(":")) return ip;
+  let [head, tail = ""] = ip.toLowerCase().split("::");
+  const h = head ? head.split(":") : [], t = tail ? tail.split(":") : [];
+  const full = ip.includes("::") ? [...h, ...Array(Math.max(0, 8 - h.length - t.length)).fill("0"), ...t] : h;
+  return full.slice(0, 4).map((x) => x.replace(/^0+(?=.)/, "")).join(":") + "::/64";
+}
+
 async function ipKey(request, env) {
-  const ip = request.headers.get("CF-Connecting-IP") || "local";
+  const ip = ipNet(request.headers.get("CF-Connecting-IP") || "local");
   return `ip:${await sha256Hex(ip + env.IP_SALT)}:${today()}`;
 }
 
@@ -157,10 +165,6 @@ async function settle(env, jobId, job) {
   return true;
 }
 
-async function bump(env, key) {
-  await env.JOBS.put(key, String((await count(env, key)) + 1), { expirationTtl: 2 * 86400 });
-}
-
 async function turnstileOk(env, token, ip) {
   try {
     const body = new FormData();
@@ -175,7 +179,7 @@ async function turnstileOk(env, token, ip) {
 }
 
 async function isOpen(env) {
-  return (await count(env, "global:" + today())) < Number(env.GLOBAL_DAY) && (await runsLeft(env));
+  return (await gate(env, "global:" + today()).value()) < Number(env.GLOBAL_DAY) && (await runsLeft(env));
 }
 
 async function handleConfig(request, env) {
@@ -196,7 +200,9 @@ async function handleCreate(request, env) {
   const origin = request.headers.get("Origin");
   if (!origin || !allowedOrigins(env).includes(origin)) return err(request, env, 403, "origin");
 
+  // без Content-Length (chunked) тело не читаем: иначе formData() глотает сколько угодно
   const len = Number(request.headers.get("Content-Length"));
+  if (!len) return err(request, env, 400, "bad_input");
   if (len > MAX_PHOTO + 64 * 1024) return err(request, env, 413, "too_large");
 
   let form;
@@ -237,10 +243,30 @@ async function handleCreate(request, env) {
 
   const devKey = await deviceKey(env, device);
   const ipK = await ipKey(request, env);
+  // параллельные POST с одного IP/устройства: иначе оба проходят blocker до записи брони
+  const locks = [gate(env, ipK), gate(env, devKey)];
+  const got = [];
+  try {
+    for (const g of locks) {
+      if ((await g.lock(LOCK_MS)) === null) return err(request, env, 429, "busy");
+      got.push(g);
+    }
+    return await createLocked(request, env, { bytes, photoHash, gender, emotions, devKey, ipK });
+  } finally {
+    for (const g of got) await g.unlock().catch(() => {});
+  }
+}
+
+async function createLocked(request, env, { bytes, photoHash, gender, emotions, devKey, ipK }) {
   const block = await blocker(env, devKey, ipK);
   if (block) return err(request, env, 429, block);
 
-  if (!(await spend(env))) return err(request, env, 503, "closed");
+  const global = gate(env, "global:" + today());
+  if (!(await global.take(Number(env.GLOBAL_DAY)))) return err(request, env, 503, "closed");
+  if (!(await spend(env))) {
+    await global.give();
+    return err(request, env, 503, "closed");
+  }
   const jobId = crypto.randomUUID();
   await reserve(env, jobId, devKey, ipK);
   let job;
@@ -248,11 +274,11 @@ async function handleCreate(request, env) {
     job = await createJob(env, { photo: bytes, photoHash, gender, emotions });
   } catch {
     await release(env, jobId, devKey, ipK);
+    await global.give(); // пак не начался — место в дневном лимите возвращаем (вызов провайдера уже засчитан в runs)
     return err(request, env, 502, "upstream");
   }
   job.devKey = devKey;
   job.ipKey = ipK;
-  await bump(env, "global:" + today());
 
   await env.JOBS.put("job:" + jobId, JSON.stringify(job), { expirationTtl: JOB_TTL });
   const { stage, stickers } = publicJob(jobId, job);
@@ -264,17 +290,32 @@ async function loadJob(env, jobId) {
   return raw ? JSON.parse(raw) : null;
 }
 
+// Шаг двигает только тот, кто взял блокировку задачи; параллельные GET получают текущее состояние без шага —
+// иначе каждый из них запускал бы те же задачи у провайдера (платно). seq отсекает отставшую копию из KV.
 async function handleStatus(request, env, jobId) {
-  const job = await loadJob(env, jobId);
-  if (!job) return err(request, env, 404, "not_found");
+  const g = gate(env, "job:" + jobId);
+  const seq = await g.lock(LOCK_MS);
+  let next;
   try {
-    const changed = await advance(env, job);
-    const settled = await settle(env, jobId, job);
-    if (changed || settled) await env.JOBS.put("job:" + jobId, JSON.stringify(job), { expirationTtl: JOB_TTL });
-  } catch {
-    // ошибка провайдера на этом шаге — отдаём прежнее состояние, клиент опросит ещё раз
+    const job = await loadJob(env, jobId);
+    if (!job) return err(request, env, 404, "not_found");
+    if (seq === null || (job.seq || 0) < seq) return json(request, env, publicJob(jobId, job));
+    const before = JSON.stringify(job);
+    try {
+      await advance(env, job);
+      await settle(env, jobId, job);
+    } catch {
+      // ошибка провайдера на этом шаге — сохраняем то, что успели (уже запущенные задачи), клиент опросит ещё раз
+    }
+    if (JSON.stringify(job) !== before) {
+      job.seq = Math.max(seq, job.seq || 0) + 1;
+      await env.JOBS.put("job:" + jobId, JSON.stringify(job), { expirationTtl: JOB_TTL });
+      next = job.seq;
+    }
+    return json(request, env, publicJob(jobId, job));
+  } finally {
+    if (seq !== null) await g.unlock(next).catch(() => {});
   }
-  return json(request, env, publicJob(jobId, job));
 }
 
 async function handleImage(request, env, jobId, sid) {
@@ -289,7 +330,8 @@ async function handleImage(request, env, jobId, sid) {
   }
   return new Response(up.body, {
     headers: {
-      "Content-Type": up.headers.get("Content-Type") || "image/png",
+      "Content-Type": up.headers.get("Content-Type"),
+      "X-Content-Type-Options": "nosniff",
       "Cache-Control": "private, max-age=86400",
       ...corsHeaders(request, env),
     },
@@ -304,8 +346,8 @@ export default {
       if (request.method === "GET" && path === "/api/config") return await handleConfig(request, env);
       if (request.method === "POST" && path === "/api/jobs") return await handleCreate(request, env);
       let m;
-      if (request.method === "GET" && (m = path.match(/^\/api\/jobs\/([\w-]+)$/))) return await handleStatus(request, env, m[1]);
-      if (request.method === "GET" && (m = path.match(/^\/api\/jobs\/([\w-]+)\/img\/([\w-]+)$/))) return await handleImage(request, env, m[1], m[2]);
+      if (request.method === "GET" && (m = path.match(/^\/api\/jobs\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/))) return await handleStatus(request, env, m[1]);
+      if (request.method === "GET" && (m = path.match(/^\/api\/jobs\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/img\/([a-z_]{1,32})$/))) return await handleImage(request, env, m[1], m[2]);
       return err(request, env, 404, "not_found");
     } catch {
       return err(request, env, 502, "upstream");

@@ -65,7 +65,8 @@
           <button type="button" class="chip" role="radio" aria-checked="false" data-v="female">Женский</button>
           <button type="button" class="chip" role="radio" aria-checked="false" data-v="male">Мужской</button>
         </div>
-        <div id="turnstile"></div>
+        <!-- не id="turnstile": id элемента становится window.turnstile и прячет API капчи -->
+        <div id="captcha"></div>
         <p class="notice warn" id="submit-err" role="alert" hidden></p>
         <button type="button" class="btn go" id="go" disabled>Сделать стикеры</button>
       </div>

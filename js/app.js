@@ -192,14 +192,14 @@ function initTurnstile() {
   if (MOCK) { st.token = 'mock'; return; }
   const render = () => {
     if (st.turnstileId != null) { window.turnstile.reset(st.turnstileId); return; }
-    st.turnstileId = window.turnstile.render('#turnstile', {
+    st.turnstileId = window.turnstile.render('#captcha', {
       sitekey: st.cfg.turnstileSiteKey, theme: 'dark',
       callback: t => { st.token = t; updateGo(); },
       'expired-callback': () => { st.token = ''; updateGo(); },
-      'error-callback': () => { st.token = ''; updateGo(); },
+      'error-callback': () => { st.token = ''; updateGo(); warn($('submit-err'), 'Проверка «я не робот» не прошла. Обновите страницу или откройте её в другом браузере.'); },
     });
   };
-  if (window.turnstile) return render();
+  if (typeof window.turnstile?.render === 'function') return render();
   const s = document.createElement('script');
   s.src = LIBS.turnstile; s.async = true; s.onload = render;
   s.onerror = () => warn($('submit-err'), 'Не загрузилась проверка «я не робот». Отключите блокировщик или обновите страницу.');
@@ -227,7 +227,8 @@ async function submit() {
   } catch (e) {
     let msg = e.message;
     if (e.body?.retryAfter) msg += ` Повторите через ${Math.ceil(e.body.retryAfter / 60)} мин.`;
-    if (e.body?.error === 'captcha') { st.token = ''; if (st.turnstileId != null) window.turnstile?.reset(st.turnstileId); }
+    // токен Turnstile одноразовый: сервер мог уже проверить его (ошибка после капчи) — нужен новый
+    if (e.status) { st.token = ''; if (st.turnstileId != null) window.turnstile?.reset(st.turnstileId); }
     warn($('submit-err'), msg);
   } finally { updateGo(); }
 }

@@ -59,7 +59,7 @@ function mockJob(id, j) {
 export async function mockFetch(path, opts = {}) {
   await sleep(150);
   const json = (status, body) => ({ ok: status < 400, status, json: async () => body });
-  if (path === '/api/config') {
+  if (path.split('?')[0] === '/api/config') {
     return json(200, { emotions: EMOTIONS, maxEmotions: 10, turnstileSiteKey: 'mock', open: true, canCreate: true });
   }
   if (path === '/api/jobs' && opts.method === 'POST') {

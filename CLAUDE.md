@@ -10,6 +10,7 @@
 | Адрес Worker'а для страницы | `js/config.js` |
 | Worker: роуты, лимиты, капча | `worker/src/index.js` |
 | Этапы и повторы (validate → restyle → emotion + qa, `nextModel`) | `worker/src/pipeline.js` |
+| Атомарные счётчики runs/global, блокировки задачи и IP (Durable Object `Gate`) | `worker/src/gate.js` |
 | Провайдер RunningHub (stub / live), endpoint'ы — vars `RH_*` в `wrangler.toml` | `worker/src/provider.js`, модели — `worker/PROVIDER.md` |
 | Промпты | `worker/prompts.json` — **не в git** (репо публичный), делается `python3 -I tools/extract_prompts.py <папка блюпринтов>` |
 | Секреты локально | `worker/.dev.vars` — не в git |

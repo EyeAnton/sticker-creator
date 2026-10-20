@@ -1,6 +1,7 @@
 // Этапы пака: validate → restyle → emotions (+qa). Двигаются при GET, состояние — в задаче (KV).
 import prompts from "../prompts.json";
 import { uploadImage, startTask, getTask } from "./provider.js";
+import { gate } from "./gate.js";
 
 export const EMOTION_IDS = prompts.emotions.map((e) => e.id);
 const MAX_ATTEMPTS = 4;
@@ -11,6 +12,7 @@ const MSG = {
   closed: "На сегодня лимит генераций исчерпан. Загляните завтра.",
   refused: "Модель не смогла обработать это фото. Попробуйте другое.",
   validateFail: "Не удалось проверить фото. Попробуйте ещё раз.",
+  notFit: "Фото не подходит. Попробуйте другое.",
   restyleFail: "Не получилось нарисовать базовый стикер. Попробуйте ещё раз.",
 };
 
@@ -23,18 +25,11 @@ export function nextModel(prev, reason) {
 
 export const today = () => new Date().toISOString().slice(0, 10);
 
-// Жёсткий потолок вызовов провайдера в сутки. false — потолок достигнут.
-export async function spend(env) {
-  const key = "runs:" + today();
-  const n = Number(await env.JOBS.get(key)) || 0;
-  if (n >= Number(env.RUNS_DAY)) return false;
-  await env.JOBS.put(key, String(n + 1), { expirationTtl: 2 * 86400 });
-  return true;
-}
+// Жёсткий потолок вызовов провайдера в сутки (счётчик в Durable Object — атомарный). false — потолок достигнут.
+export const spend = (env) => gate(env, "runs:" + today()).take(Number(env.RUNS_DAY));
 
 export async function runsLeft(env) {
-  const n = Number(await env.JOBS.get("runs:" + today())) || 0;
-  return n < Number(env.RUNS_DAY);
+  return (await gate(env, "runs:" + today()).value()) < Number(env.RUNS_DAY);
 }
 
 // Ответ модерации/QA: JSON {"status": 0|1, "failureReason"?}; запасной формат — строка PASS / FAIL: <причина>.
@@ -49,6 +44,19 @@ function parseStatus(text) {
   const f = s.match(/^\s*FAIL\b\s*:?\s*(.*)/i);
   if (f) return { status: 1, failureReason: f[1].trim() };
   return null;
+}
+
+// текст промпта validate без образцов причин ("failureReason": "…") — образцы модель повторяет законно
+const PROMPT_TEXT = prompts.validate.replace(/"failureReason"\s*:\s*"[^"]*"/g, " ").toLowerCase().replace(/\s+/g, " ");
+
+// failureReason идёт пользователю: без управляющих символов, ≤200, и не пересказ промпта (инъекция текстом на фото).
+function cleanReason(v) {
+  const s = String(v || "").replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 200);
+  const low = s.toLowerCase();
+  let hits = 0; // окна по 24 символа, совпавшие с промптом; ≥8 (~70 символов) — пересказ, а не причина
+  for (let i = 0; i + 24 <= low.length; i += 6) if (PROMPT_TEXT.includes(low.slice(i, i + 24))) hits++;
+  if (hits >= 8) return MSG.notFit;
+  return s || MSG.notFit;
 }
 
 async function reject(env, job, message) {
@@ -104,7 +112,7 @@ async function stepValidate(env, job) {
   const r = parseStatus(t.text);
   if (!r) return fail(job, MSG.validateFail);
   if (r.status !== 0) {
-    const reason = String(r.failureReason || "Фото не подходит.").slice(0, 200);
+    const reason = cleanReason(r.failureReason);
     return reject(env, job, reason);
   }
   await startRestyle(env, job);

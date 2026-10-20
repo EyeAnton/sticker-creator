@@ -64,15 +64,25 @@ handler = () => J({ errorCode: "1007", errorMessage: "must be greater than 0", t
 await assert.rejects(startTask(env, "validate", { image: url }), /must be greater/);
 assert.equal(calls.length, 2);
 
-// повторы: 5xx и сеть → до 3, затем успех/ошибка; 429 тоже
+// повторы submit (платный): только 429 → до 3; 5xx и сеть — без повтора (задача могла создаться)
 calls.length = 0;
 let n = 0;
-handler = () => (++n < 3 ? J({}, 503) : J({ taskId: "T2" }));
+handler = () => (++n < 3 ? J({}, 429) : J({ taskId: "T2" }));
 assert.match(await startTask(env, "validate", { image: url }), /T2$/);
 assert.equal(calls.length, 3);
 calls.length = 0;
+handler = () => J({}, 503);
+await assert.rejects(startTask(env, "validate", { image: url }), /HTTP 503/);
+assert.equal(calls.length, 1);
+calls.length = 0;
 handler = () => { throw new TypeError("net down"); };
 await assert.rejects(startTask(env, "validate", { image: url }), /network/);
+assert.equal(calls.length, 1);
+// query (бесплатный) — 5xx повторяется
+calls.length = 0;
+n = 0;
+handler = () => (++n < 3 ? J({}, 503) : J({ status: "RUNNING" }));
+assert.equal((await getTask(env, `rh:${Date.now()}:T9`)).state, "running");
 assert.equal(calls.length, 3);
 calls.length = 0;
 handler = () => J({}, 400);
@@ -131,6 +141,9 @@ await assert.rejects(fetchImage(env, "http://rh.runninghub.ai/x.png"), /not allo
 await assert.rejects(fetchImage(env, "https://runninghub.ai.evil.com/x.png"), /not allowed/);
 handler = () => new Response("png", { headers: { "Content-Type": "image/png" } });
 assert.equal((await fetchImage(env, "https://rh.runninghub.ai/a.png")).status, 200);
+handler = () => new Response("<script>", { headers: { "Content-Type": "text/html" } });
+await assert.rejects(fetchImage(env, "https://rh.runninghub.ai/a.png"), /not an image/);
+handler = () => new Response("png", { headers: { "Content-Type": "image/png" } });
 assert.equal((await fetchImage({ ...env, RH_IMG_HOSTS: "cdn.example" }, "https://x.cdn.example/a.png")).status, 200);
 assert.equal((await fetchImage({ ...env, RH_IMG_HOSTS: "rh-hk-images-1.cos.ap-hongkong.myqcloud.com" }, "https://rh-hk-images-1.cos.ap-hongkong.myqcloud.com/a.jpg")).status, 200);
 await assert.rejects(fetchImage({ ...env, RH_IMG_HOSTS: "rh-hk-images-1.cos.ap-hongkong.myqcloud.com" }, "https://other-bucket.cos.ap-hongkong.myqcloud.com/a.jpg"), /not allowed/);
