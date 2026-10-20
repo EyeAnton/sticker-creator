@@ -94,7 +94,8 @@ class RhError extends Error {
 }
 
 // fetch с повтором только для сети / 429 / 5xx (до RETRIES попыток, экспоненциальная пауза).
-async function rhFetch(url, init, what) {
+// once: запрос платный (submit) — сеть/5xx могли уже создать задачу, повторяем только 429.
+async function rhFetch(url, init, what, once = false) {
   let last;
   for (let i = 0; i < RETRIES; i++) {
     if (i) await sleep(500 * 2 ** (i - 1));
@@ -103,10 +104,12 @@ async function rhFetch(url, init, what) {
       res = await fetch(url, init);
     } catch {
       last = new Error(`${what}: network error`);
+      if (once) break;
       continue;
     }
     if (res.status === 429 || res.status >= 500) {
       last = new Error(`${what}: HTTP ${res.status}`); // тело не включаем: может содержать лишнее
+      if (once && res.status !== 429) break;
       continue;
     }
     if (!res.ok) throw new Error(`${what}: HTTP ${res.status}`);
@@ -115,6 +118,7 @@ async function rhFetch(url, init, what) {
       j = await res.json();
     } catch {
       last = new Error(`${what}: bad json`);
+      if (once) break;
       continue;
     }
     const e = bizError(j);
@@ -124,12 +128,12 @@ async function rhFetch(url, init, what) {
   throw last;
 }
 
-const postJson = (env, path, payload, what) =>
+const postJson = (env, path, payload, what, once) =>
   rhFetch(`${base(env)}${path}`, {
     method: "POST",
     headers: { ...auth(env), "Content-Type": "application/json" },
     body: JSON.stringify(payload),
-  }, what);
+  }, what, once);
 
 // Причину сбоя сохраняем в KV рядом с задачами (клиенту не отдаётся).
 async function noteError(env, taskId, status, text) {
@@ -189,7 +193,7 @@ const live = {
   uploadImage: (env, body, filename) => upload(env, body, filename),
 
   async startTask(env, kind, input) {
-    const j = await postJson(env, "/" + endpointOf(env, kind, input), payloadOf(env, kind, input), "rh submit");
+    const j = await postJson(env, "/" + endpointOf(env, kind, input), payloadOf(env, kind, input), "rh submit", true);
     const id = j.taskId || j.task_id;
     if (!id) throw new Error("rh submit: no taskId");
     console.log("rh submit", endpointOf(env, kind, input), id);
@@ -258,6 +262,7 @@ const live = {
       res = await fetch(next, { redirect: "manual" });
     }
     if (!res.ok) throw new Error("fetch image: HTTP " + res.status);
+    if (!/^image\//i.test(res.headers.get("Content-Type") || "")) throw new Error("fetch image: not an image");
     return res;
   },
 };
