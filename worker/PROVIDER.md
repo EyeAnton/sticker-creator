@@ -6,11 +6,11 @@ Endpoint'ы и resolution — vars в `wrangler.toml` (канал «低价渠道
 
 | Этап | Var | Endpoint | Поля | Цена, ¥/запуск (ориентир) |
 |---|---|---|---|---|
-| validate | `RH_VALIDATE` | `rhart-text-g-25-flash/image-to-text` | `prompt` = `prompts.validate`, `imageUrl` (строка) | 0.02 |
+| validate | `RH_VALIDATE` | `rhart-text-g-3-pro-preview/image-to-text` | `prompt` = `prompts.validate`, `imageUrl` (строка) | 0.05 по реестру, фактически списывалось 0.01 |
 | restyle | `RH_RESTYLE` | `rhart-image-n-pro/edit` | `imageUrls` [фото], `prompt`, `resolution` (`RH_RESOLUTION`, 1k), `aspectRatio` 1:1 | 0.40 (1k) |
 | emotion fast | `RH_EMOTION_FAST` | `rhart-image-n-g31-flash/image-to-image` | `imageUrls` [base], `prompt`, `resolution`, `aspectRatio` 1:1 | 0.19 (1k) |
 | emotion pro | `RH_EMOTION_PRO` | `rhart-image-n-pro/edit` | как restyle | 0.40 (1k) |
-| qa | `RH_QA` | `rhart-text-g-25-flash/image-to-text` | `prompt` = `prompts.qa_single` (критерии 1–2) + задание, `imageUrl` = результат | 0.02 |
+| qa | `RH_QA` | `rhart-text-g-3-pro-preview/image-to-text` | `prompt` = `prompts.qa_single` (критерии 1–2) + задание, `imageUrl` = результат | 0.05 / факт 0.01 |
 
 QA без проверки сходства с исходником — решение пользователя (дешевле, ¥0.02): одна картинка, только зелёный фон и белая обводка; `qa_single` строит `tools/extract_prompts.py` из `qa` (критерий 3 убран).
 
@@ -24,3 +24,5 @@ QA без проверки сходства с исходником — реше
 - Код и текст (≤300) ошибки провайдера — в KV `taskerr:<taskId>` (TTL 2 сут), клиенту не отдаются.
 - `fetchImage` — только хосты `runninghub.ai`/`.cn` и поддомены (+ var `RH_IMG_HOSTS`), редиректы вручную по тому же списку; иначе `/img` стал бы открытым прокси.
 - Результаты передаются в следующие этапы по URL (base → emotion) без перекладки.
+
+Выбор text-модели — по живым пробам 2026-10-20 (лицо / баннер без лица): g-3-pro-preview держит формат ответа 6 из 6 (~11–19 с); g-25-pro отвечал то JSON, то прозой по-китайски (до 329 с), g-25-flash и g-25-pro-cv путают формат. Разбор ответа — JSON со status или строка PASS / FAIL: причина.
