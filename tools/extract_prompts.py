@@ -45,11 +45,20 @@ emotions = json.loads(emo["mapper"]["json"])["prompts"]
 qa = next(m for m in blueprint("step2.2.1") if name(m) == "GEMINI QA")
 qa_prompt = json.loads(qa["mapper"]["jsonStringBodyContent"])["systemInstruction"]["parts"][0]["text"]
 
+# QA по одной картинке (только стикер): без критерия 3 (сходство с исходником) — второго изображения нет
+qa_single = qa_prompt.split("3. **CRITICAL: Content Preservation")[0].rstrip()
+qa_single = (qa_single
+    .replace(' based on the identity in a "SOURCE REFERENCE PHOTO" (Image 1) against', " against")
+    .replace("(Image 2, which may feature a different emotion or artistic elements)", "(the attached image)"))
+qa_single = "\n".join(l for l in qa_single.split("\n") if "Failure - Likeness" not in l)
+assert "Image 1" not in qa_single and "Likeness" not in qa_single, "qa_single: адаптация не сработала"
+
 out.parent.mkdir(exist_ok=True)
 out.write_text(json.dumps({
     "validate": validate_prompt,
     "restyle": restyle_prompt,
     "emotions": [{"id": e["name"], "prompt": e["prompt"]} for e in emotions],
     "qa": qa_prompt,
+    "qa_single": qa_single,
 }, ensure_ascii=False, indent=2), "utf-8")
-print(f"{out}: validate + restyle + {len(emotions)} emotions + qa")
+print(f"{out}: validate + restyle + {len(emotions)} emotions + qa + qa_single")

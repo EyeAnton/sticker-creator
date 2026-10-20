@@ -1,31 +1,26 @@
-# Провайдеры — Replicate проверяет, RunningHub рисует
+# Провайдер — RunningHub Standard Model API
 
-Ключи сюда **не писать**. Локально — `worker/.dev.vars`, в проде — `npx wrangler secret put REPLICATE_API_TOKEN` и `npx wrangler secret put RUNNINGHUB_API_KEY`. В обоих аккаунтах поставить лимит расходов.
+Контракт: [developer-kit](https://github.com/HM-RunningHub/ComfyUI_RH_OpenAPI/tree/main/developer-kit) (`llms.txt`, `rh-api-contract.md`); поля и enum'ы — только из `model-registry.public.json`. Ключ сюда **не писать**: локально `worker/.dev.vars` (`RUNNINGHUB_API_KEY`, `RH_API_BASE_URL`), в проде `npx wrangler secret put RUNNINGHUB_API_KEY`; в аккаунте RunningHub поставить лимит расходов.
 
-## Маршруты
-Var `ROUTES` в `wrangler.toml` — какой этап куда идёт; у любого этапа можно поставить `stub` (проверка по частям):
-```
-ROUTES = "validate=replicate,qa=replicate,restyle=runninghub,emotion=runninghub"
-```
-`PROVIDER_MODE=stub` по-прежнему переводит всё в stub (локальная разработка, smoke.sh).
+Endpoint'ы и resolution — vars в `wrangler.toml` (канал «低价渠道版» меняется одной строкой). `PROVIDER_MODE=stub` переводит всё в stub (локальная разработка, `smoke.sh`).
 
-| Этап | Провайдер | В блюпринте (Gemini API) | Модель / workflow | Вход | Выход |
-|---|---|---|---|---|---|
-| validate | Replicate | gemini-2.5-pro | `google/gemini-2.5-flash` на Replicate (по умолчанию; `REPLICATE_MODEL=google/gemini-2.5-pro` переопределяет) | фото + `prompts.validate` | текст JSON |
-| qa | Replicate | gemini-2.5-pro, temperature 0.2 | та же | base + результат + `prompts.qa` | текст JSON |
-| restyle | RunningHub | gemini-3-pro-image-preview | workflow из `worker/rh/restyle.json` | фото + `prompts.restyle` | картинка 1:1 |
-| emotion `fast` | RunningHub | gemini-2.5-flash-image | workflow из `worker/rh/emotion_fast.json` | base + промпт эмоции | картинка 1:1 |
-| emotion `pro` | RunningHub | gemini-3-pro-image-preview | workflow из `worker/rh/emotion_pro.json` (или тот же с переключателем) | base + промпт эмоции | картинка 1:1 |
+| Этап | Var | Endpoint | Поля | Цена, ¥/запуск (ориентир) |
+|---|---|---|---|---|
+| validate | `RH_VALIDATE` | `rhart-text-g-25-flash/image-to-text` | `prompt` = `prompts.validate`, `imageUrl` (строка) | 0.02 |
+| restyle | `RH_RESTYLE` | `rhart-image-n-pro/edit` | `imageUrls` [фото], `prompt`, `resolution` (`RH_RESOLUTION`, 1k), `aspectRatio` 1:1 | 0.40 (1k) |
+| emotion fast | `RH_EMOTION_FAST` | `rhart-image-n-g31-flash/image-to-image` | `imageUrls` [base], `prompt`, `resolution`, `aspectRatio` 1:1 | 0.19 (1k) |
+| emotion pro | `RH_EMOTION_PRO` | `rhart-image-n-pro/edit` | как restyle | 0.40 (1k) |
+| qa | `RH_QA` | `rhart-text-g-25-flash/image-to-text` | `prompt` = `prompts.qa_single` (критерии 1–2) + задание, `imageUrl` = результат | 0.02 |
 
-### Replicate: вход и цена
-`POST /v1/models/google/gemini-2.5-flash/predictions`, `input`: `prompt`, `system_instruction` (= промпт validate/qa), `images` (массив URL: Files API `urls.get` или результат RunningHub), `temperature` (0.2 для qa). Выход — массив строк, склеивается. Цена по агрегаторам ≈ $0.30/1M токенов на вход, $2.50/1M на выход (сверить на странице модели; страница схемы без токена не читалась — имена полей `images`/`system_instruction` проверить первым живым прогоном).
+QA без проверки сходства с исходником — решение пользователя (дешевле, ¥0.02): одна картинка, только зелёный фон и белая обводка; `qa_single` строит `tools/extract_prompts.py` из `qa` (критерий 3 убран).
 
-Данные RunningHub (заполняет пользователь, формат — `worker/rh/README.md`, читается из `worker/rh/config.json`): JSON workflow (API-формат) в `worker/rh/`, плюс в `worker/rh/README.md` — workflowId/webappId, nodeId+fieldName для картинки и промпта, узел результата, домен API (`www.runninghub.ai` или `.cn`).
+Цены из `pricing.public.json` (обновлено 2026-04-29) — **только ориентир**, не биллинг; сверять на сайте RunningHub.
 
 ## Как устроено в `worker/src/provider.js`
-- Один интерфейс (`uploadImage/startTask/getTask/fetchImage`), внутри — роутер по `kind` → `replicate` | `runninghub` | `stub`.
-- `uploadImage`: тело читается один раз в ArrayBuffer (без декодирования) и загружается туда, где оно нужно (Replicate Files API и/или upload RunningHub). Возвращает составную ссылку `{"replicate": "<url>", "runninghub": "<fileName>"}` строкой JSON; каждый провайдер берёт свою часть.
-- Картинка между провайдерами (base с RunningHub → QA и emotion): по URL, если он открывается без ключа; иначе перекладывать стримом (fetch → upload), без декодирования.
-- `taskId` с префиксом провайдера: `rep:<id>`, `rh:<id>`, `stub.…` — `getTask` знает, кого спрашивать.
-- `fetchImage` — только хосты результатов этих провайдеров (белый список), иначе ошибка: `/img` не открытый прокси.
-- Отказ модели: Replicate — `failed` с текстом про safety/policy или `succeeded` без результата; RunningHub — ошибка узла модели или пустой выход → `refused: true`. Прочие сбои — `error`.
+- Клиент: `base = RH_API_BASE_URL`, `Authorization: Bearer <RUNNINGHUB_API_KEY>`. Upload — `POST /media/upload/binary` (поле `file`, тело без декодирования) → `data.download_url`; submit — `POST /{endpoint}` → `taskId`; опрос — `POST /query`.
+- Ошибки приходят с HTTP 200: `{code≠0, msg}` или `{errorCode, errorMessage, failedReason}` — проверяются оба формата.
+- Повтор (до 3, backoff) только для сети, 429, 5xx; бизнес-ошибки не повторяются.
+- Статусы: `CREATE`/`QUEUED`/`RUNNING` → queued/running; `SUCCESS` → done (`results[].url|outputUrl`, текст — `text|content|output`); `FAILED`/`CANCEL` → `refused`, если сообщение про policy/moderation/safety/NSFW/violation/forbidden, иначе обычная ошибка (сбой дешёвого канала не переключает модель зря). Таймаут задачи — 10 мин (время старта зашито в taskId `rh:<мс>:<taskId>`).
+- Код и текст (≤300) ошибки провайдера — в KV `taskerr:<taskId>` (TTL 2 сут), клиенту не отдаются.
+- `fetchImage` — только хосты `runninghub.ai`/`.cn` и поддомены (+ var `RH_IMG_HOSTS`), редиректы вручную по тому же списку; иначе `/img` стал бы открытым прокси.
+- Результаты передаются в следующие этапы по URL (base → emotion) без перекладки.
