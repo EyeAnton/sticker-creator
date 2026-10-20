@@ -1,0 +1,5 @@
+worker/prompts.json
+worker/.dev.vars
+worker/node_modules/
+worker/.wrangler/
+.DS_Store
