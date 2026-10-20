@@ -28,6 +28,13 @@ def name(m):
     return m.get("metadata", {}).get("designer", {}).get("name") or ""
 
 
+def texts(body):
+    return "\n".join(p["text"] for c in body["contents"] for p in c["parts"] if "text" in p)
+
+
+val = next(m for m in blueprint("step1.0") if name(m).startswith("GEMINI detect face"))
+validate_prompt = texts(json.loads(val["mapper"]["jsonStringBodyContent"]))
+
 restyle = next(m for m in blueprint("step2.1") if "Restyle" in name(m))
 body = json.loads(restyle["mapper"]["jsonStringBodyContent"])
 restyle_prompt = body["contents"][0]["parts"][0]["text"].replace("{{62.gender}}", "{gender}")
@@ -38,9 +45,11 @@ emotions = json.loads(emo["mapper"]["json"])["prompts"]
 qa = next(m for m in blueprint("step2.2.1") if name(m) == "GEMINI QA")
 qa_prompt = json.loads(qa["mapper"]["jsonStringBodyContent"])["systemInstruction"]["parts"][0]["text"]
 
+out.parent.mkdir(exist_ok=True)
 out.write_text(json.dumps({
+    "validate": validate_prompt,
     "restyle": restyle_prompt,
     "emotions": [{"id": e["name"], "prompt": e["prompt"]} for e in emotions],
     "qa": qa_prompt,
 }, ensure_ascii=False, indent=2), "utf-8")
-print(f"{out}: restyle + {len(emotions)} emotions + qa")
+print(f"{out}: validate + restyle + {len(emotions)} emotions + qa")
