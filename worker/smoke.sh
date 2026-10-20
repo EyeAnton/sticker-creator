@@ -18,9 +18,10 @@ check() { # описание, ожидаемое, фактическое
 mkjpg() { printf '\xff\xd8\xff\xe0smoke-%s\xff\xd9' "$1" > "$TMP/$1.jpg"; }
 mkjpg a; mkjpg b; mkjpg c
 
-post() { # файл, эмоции, пол → тело в $TMP/out, код в stdout
+DEV=smoke-device-$RANDOM$RANDOM$RANDOM
+post() { # файл, эмоции, пол [, device] → тело в $TMP/out, код в stdout
   curl -s -o "$TMP/out" -w '%{http_code}' -H "Origin: $ORIGIN" \
-    -F "photo=@$TMP/$1.jpg;type=image/jpeg" -F "emotions=$2" -F "gender=$3" -F "turnstile=XXXX.DUMMY.TOKEN.XXXX" "$BASE/api/jobs"
+    -F "photo=@$TMP/$1.jpg;type=image/jpeg" -F "emotions=$2" -F "gender=$3" -F "device=${4-$DEV}" -F "turnstile=XXXX.DUMMY.TOKEN.XXXX" "$BASE/api/jobs"
 }
 
 poll() { # jobId → ждём done/rejected/failed, печатаем смену этапа и попыток
@@ -35,13 +36,15 @@ poll() { # jobId → ждём done/rejected/failed, печатаем смену 
 }
 
 echo "== config"
-curl -s -H "Origin: $ORIGIN" "$BASE/api/config" | tee "$TMP/cfg"; echo
+curl -s -H "Origin: $ORIGIN" "$BASE/api/config?device=$DEV" | tee "$TMP/cfg"; echo
 check open True "$(jget "d['open']" < "$TMP/cfg")"
-check leftToday 2 "$(jget "d['leftToday']" < "$TMP/cfg")"
+check canCreate True "$(jget "d['canCreate']" < "$TMP/cfg")"
+check maxEmotions 10 "$(jget "d['maxEmotions']" < "$TMP/cfg")"
 
 echo "== origin / bad input"
 check "POST без Origin" 403 "$(curl -s -o /dev/null -w '%{http_code}' -F photo=@$TMP/a.jpg -F emotions=wink -F turnstile=x "$BASE/api/jobs")"
 check "неизвестная эмоция" 400 "$(post a nope '')"
+check "без device" 400 "$(post a wink '' '')"
 
 echo "== пак 1: gender=stub-reject → rejected"
 check POST 201 "$(post a wink stub-reject)"
@@ -54,9 +57,15 @@ echo "== повтор того же фото → 422"
 check POST 422 "$(post a wink '')"
 cat "$TMP/out"; echo
 
+echo "== после rejected устройство снова может"
+curl -s -H "Origin: $ORIGIN" "$BASE/api/config?device=$DEV" > "$TMP/cfg"
+check canCreate True "$(jget "d['canCreate']" < "$TMP/cfg")"
+
 echo "== пак 2: wink + demon → demon на 3-й попытке, done"
 check POST 201 "$(post b wink,demon '')"
 J=$(jget "d['jobId']" < "$TMP/out")
+check "параллельный пак → 429 busy" 429 "$(post c wink '')"
+check error busy "$(jget "d['error']" < "$TMP/out")"
 poll "$J"
 check stage done "$(jget "d['stage']" < "$TMP/job")"
 check "base" done "$(jget "[s['state'] for s in d['stickers'] if s['id']=='base'][0]" < "$TMP/job")"
@@ -66,9 +75,14 @@ curl -s -D "$TMP/hdr" -o "$TMP/img.png" -H "Origin: $ORIGIN" "$BASE/api/jobs/$J/
 check "Content-Type" image/png "$(grep -i '^content-type' "$TMP/hdr" | tr -d '\r' | awk '{print $2}')"
 check "PNG-сигнатура" 89504e47 "$(head -c4 "$TMP/img.png" | xxd -p)"
 
-echo "== пак 3 с того же IP → 429"
+echo "== второй пак с того же device → 429 limit"
 check POST 429 "$(post c wink '')"
+check error limit "$(jget "d['error']" < "$TMP/out")"
 cat "$TMP/out"; echo
+curl -s -H "Origin: $ORIGIN" "$BASE/api/config?device=$DEV" > "$TMP/cfg"
+check canCreate False "$(jget "d['canCreate']" < "$TMP/cfg")"
+echo "== другой device с того же IP → 429 (страховка по IP)"
+check POST 429 "$(post c wink '' other-device-$RANDOM$RANDOM$RANDOM)"
 
 rm -rf "$TMP"
 echo; [ $FAILS -eq 0 ] && echo "SMOKE OK" || { echo "SMOKE: провалов $FAILS"; exit 1; }

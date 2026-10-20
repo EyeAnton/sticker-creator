@@ -1,4 +1,4 @@
-import { MOCK, API_BASE, LIBS, POLL_MS, JOB_KEY, JOB_TTL_MS, mockFetch } from './config.js';
+import { MOCK, API_BASE, LIBS, POLL_MS, JOB_KEY, JOB_TTL_MS, DEVICE_KEY, mockFetch } from './config.js';
 import { detectFaces, loadDetector } from './face.js';
 import { loadScaled, faceSquare, renderRect, toJpeg, ManualCrop, OUT } from './crop.js';
 import { toSticker } from './chroma.js';
@@ -9,7 +9,7 @@ const LABELS = { base: 'Базовый', wink: 'Подмигивание', kiss_
 const label = id => LABELS[id] || id;
 const STAGES = { validate: 'Проверяем фото', restyle: 'Рисуем базовый стикер', emotions: 'Рисуем эмоции', done: 'Готово' };
 
-const st = { cfg: null, cfgErr: null, src: null, autoRect: null, emotions: new Set(), gender: '', token: '', turnstileId: null, job: null, timer: null, polling: false, fails: 0, results: [], urls: [], crop: null };
+const st = { memDevice: '', cfg: null, cfgErr: null, src: null, autoRect: null, emotions: new Set(), gender: '', token: '', turnstileId: null, job: null, timer: null, polling: false, fails: 0, results: [], urls: [], crop: null };
 
 /* ---------- API ---------- */
 const imgUrl = p => (MOCK || /^assets\//.test(p) ? p : API_BASE + p);
@@ -66,17 +66,31 @@ function readJob() {
   return null;
 }
 const writeJob = j => { try { localStorage.setItem(JOB_KEY, JSON.stringify(j)); } catch { /* приватный режим */ } };
+function deviceId() {
+  try {
+    let d = localStorage.getItem(DEVICE_KEY);
+    if (!d) { d = crypto.randomUUID(); localStorage.setItem(DEVICE_KEY, d); }
+    return d;
+  } catch { return st.memDevice || (st.memDevice = crypto.randomUUID()); } // приватный режим без хранилища
+}
 const clearJob = () => { try { localStorage.removeItem(JOB_KEY); } catch { /* ок */ } };
+// последний пак: показывается на экране «пак уже готов» (сам sc.job очищается после результата)
+const LAST_KEY = 'sc.last';
+const readLast = () => { try { const j = JSON.parse(localStorage.getItem(LAST_KEY)); return j && j.jobId && Date.now() - j.t < JOB_TTL_MS ? j : null; } catch { return null; } };
+const writeLast = j => { try { localStorage.setItem(LAST_KEY, JSON.stringify(j)); } catch { /* ок */ } };
 
 async function loadConfig() {
-  try { st.cfg = await api('/api/config'); st.cfgErr = null; } catch (e) { st.cfgErr = e; return; }
-  $('closed').hidden = st.cfg.open;
-  $('pick').hidden = !st.cfg.open;
-  if (st.cfg.open && typeof st.cfg.leftToday === 'number') {
-    $('left').hidden = false;
-    $('left').textContent = st.cfg.leftToday > 0
-      ? `Сегодня с вашего адреса можно сделать ещё паков: ${st.cfg.leftToday}.`
-      : 'Сегодня вы уже сделали максимум паков. Приходите завтра.';
+  try { st.cfg = await api('/api/config?device=' + encodeURIComponent(deviceId())); st.cfgErr = null; } catch (e) { st.cfgErr = e; return; }
+  const can = st.cfg.canCreate !== false;
+  $('closed').hidden = st.cfg.open || !can;
+  $('pick').hidden = !(st.cfg.open && can);
+  $('blocked').hidden = can;
+  if (!can) {
+    const last = readLast();
+    $('blocked-title').textContent = st.cfg.reason === 'busy' ? 'Пак уже делается' : 'Ваш пак уже готов';
+    $('blocked-msg').textContent = last ? '' : st.cfg.reason === 'busy' ? 'Дождитесь, пока он будет готов.' : 'С этого устройства пак уже сделан.';
+    $('open-last').hidden = !last;
+    $('open-last').onclick = () => { st.job = last; startGen(); };
   }
 }
 
@@ -152,7 +166,7 @@ function toggleManual() {
 function buildOptions() {
   const box = $('emotions'); box.textContent = '';
   const max = st.cfg.maxEmotions;
-  if (!st.emotions.size) st.cfg.emotions.slice(0, 3).forEach(i => st.emotions.add(i));
+  if (!st.emotions.size) st.cfg.emotions.forEach(i => st.emotions.add(i));
   for (const id of st.cfg.emotions) {
     const b = document.createElement('button');
     b.type = 'button'; b.className = 'chip'; b.dataset.id = id; b.textContent = label(id);
@@ -204,10 +218,11 @@ async function submit() {
     f.append('photo', blob, 'photo.jpg');
     f.append('emotions', [...st.emotions].join(','));
     f.append('gender', st.gender);
+    f.append('device', deviceId());
     f.append('turnstile', st.token);
     const r = await api('/api/jobs', { method: 'POST', body: f });
     st.job = { jobId: r.jobId, t: Date.now(), emotions: [...st.emotions] };
-    writeJob(st.job);
+    writeJob(st.job); writeLast(st.job);
     startGen(r);
   } catch (e) {
     let msg = e.message;
@@ -286,6 +301,7 @@ function endGen(j) {
   $('gen-again').textContent = rejected ? 'Выбрать другое фото' : 'Попробовать снова';
   $('stage').textContent = rejected ? 'Фото не подошло' : 'Не получилось';
   clearJob();
+  try { localStorage.removeItem(LAST_KEY); } catch { /* ок */ }
 }
 
 /* ---------- 4. результат ---------- */

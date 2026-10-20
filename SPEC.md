@@ -42,9 +42,9 @@
 ### `GET /api/config`
 ```json
 { "emotions": ["wink","kiss_heart","heart_eyes","hearts_around","halo","laughing","tears","smile","demon","blush"],
-  "maxEmotions": 6, "turnstileSiteKey": "…", "open": true, "leftToday": 2 }
+  "maxEmotions": 10, "turnstileSiteKey": "…", "open": true, "canCreate": true }
 ```
-`open: false` — исчерпан общий дневной лимит (страница показывает примеры вместо формы). `leftToday` — сколько паков ещё может этот IP.
+`open: false` — исчерпан общий дневной лимит (страница показывает примеры вместо формы). Запрос `?device=<id>`: `canCreate` — может ли это устройство (и его IP) сделать пак сейчас; если `false`, есть `reason`: `limit` (пак уже сделан) или `busy` (пак делается).
 
 ### `POST /api/jobs` — multipart/form-data
 | поле | что |
@@ -52,10 +52,11 @@
 | `photo` | JPEG 1024×1024, уже обрезан по лицу, ≤ 1.5 МБ |
 | `emotions` | id через запятую, 1…`maxEmotions`, только из списка, без повторов |
 | `gender` | `""` / `"male"` / `"female"` |
+| `device` | id устройства (`crypto.randomUUID()` из `localStorage["sc.device"]`), 16…64 символа `[\w-]`; без него `400` |
 | `turnstile` | токен Cloudflare Turnstile |
 
 → `201 {"jobId": "…", "stage": "validate", "stickers": [{"id":"base","state":"queued"}, {"id":"wink","state":"queued"}, …]}`
-Ошибки: `400 bad_input`, `403 captcha`, `403 origin`, `413 too_large`, `422 rejected` (фото уже отклонялось), `429 limit` (+`retryAfter`), `503 closed`, `502 upstream`.
+Ошибки: `400 bad_input`, `403 captcha`, `403 origin`, `413 too_large`, `422 rejected` (фото уже отклонялось), `429 limit` («С этого устройства пак уже сделан»), `429 busy` («Пак уже делается»), `503 closed`, `502 upstream`.
 
 ### `GET /api/jobs/:jobId`
 ```json
@@ -96,10 +97,14 @@ getTask(env, taskId) → { state: "queued"|"running"|"done"|"failed", url?, text
 
 ## Лимиты и безопасность (Worker)
 - Секреты (`wrangler secret put`): `RUNNINGHUB_API_KEY`, `TURNSTILE_SECRET`, `IP_SALT`. Никогда не попадают в ответы и логи.
-- Vars (`wrangler.toml`): `PROVIDER_MODE`, `RH_API_BASE_URL`, `RH_VALIDATE`, `RH_RESTYLE`, `RH_EMOTION_FAST`, `RH_EMOTION_PRO`, `RH_QA`, `RH_RESOLUTION`, `RH_IMG_HOSTS` (необяз.), `ALLOWED_ORIGINS="https://eyeanton.github.io,http://localhost:8000"`, `MAX_EMOTIONS=6`, `PER_IP_DAY=2`, `GLOBAL_DAY=30`, `RUNS_DAY=400`, `TURNSTILE_SITE_KEY`.
+- Vars (`wrangler.toml`): `PROVIDER_MODE`, `RH_API_BASE_URL`, `RH_VALIDATE`, `RH_RESTYLE`, `RH_EMOTION_FAST`, `RH_EMOTION_PRO`, `RH_QA`, `RH_RESOLUTION`, `RH_IMG_HOSTS` (необяз.), `ALLOWED_ORIGINS="https://eyeanton.github.io,http://localhost:8000"`, `MAX_EMOTIONS=10`, `PER_IP_DAY=1`, `GLOBAL_DAY=10`, `RUNS_DAY=200`, `TURNSTILE_SITE_KEY`.
 - `RUNS_DAY` — жёсткий потолок вызовов провайдера в сутки (все виды: validate, restyle, emotion, qa), счётчик `runs:<YYYY-MM-DD>`. Достигнут → новые паки `503 closed`, у начатых паков недоделанные стикеры `failed` (без новых вызовов). Это главный предохранитель по деньгам, независимо от повторов.
 - POST: `Origin` ∈ `ALLOWED_ORIGINS`, Turnstile (`siteverify`), размер ≤ 1.5 МБ, первые байты JPEG (`FF D8 FF`), emotions — белый список, проверка «отклонённых» по sha256 (`crypto.subtle.digest`).
-- Счётчики в KV `JOBS`: `ip:<sha256(ip+IP_SALT)>:<YYYY-MM-DD>` и `global:<YYYY-MM-DD>`, TTL 2 дня; списываются при успешном старте. IP — из `CF-Connecting-IP`, в KV только хэш.
+- **Один удачный пак на устройство.** KV `dev:<sha256(device+IP_SALT)>`, TTL 365 дней, и страховка по IP `ip:<sha256(ip+IP_SALT)>:<YYYY-MM-DD>` (TTL 2 дня, не больше `PER_IP_DAY` паков в сутки — иначе очистка браузера давала бы второй пак). Значение — список броней `{state: "reserved"|"final", jobId, t}`; в задаче лежат `devKey`/`ipKey` и флаг `settled`.
+  - При старте пака устройство и IP **бронируются** (`reserved`, привязка к `jobId`); пока бронь активна, новый POST → `429 busy`.
+  - Удачный пак = `stage: done`, `base` done и хотя бы одна эмоция done → бронь `final`. Любой другой исход (`rejected`, `failed`, все эмоции `failed`) → бронь снимается. Исход фиксируется при том `GET /api/jobs/:id`, который его увидел (флаг `settled`); если никто не опросил — при следующей проверке лимита (config/POST). Задача пропала из KV (24 ч), а бронь `reserved` — считается снятой (льгота 2 мин между бронью и записью задачи).
+  - Ошибка провайдера при старте (`502`) бронь снимает.
+- `global:<YYYY-MM-DD>` — общий счётчик стартов в сутки (`GLOBAL_DAY`), TTL 2 дня. IP — из `CF-Connecting-IP`, в KV только хэш.
 - Ошибки провайдера наружу не отдаём сырыми — только код и общий текст. `failureReason` validate — показываем (он для пользователя), но обрезаем до 200 символов.
 - Локально: `worker/.dev.vars` (не в git) с тестовыми ключами Turnstile `1x00000000000000000000AA` / `1x0000000000000000000000000000000AA`, `PROVIDER_MODE=stub`, `IP_SALT=dev`.
 - CPU-лимит бесплатного тарифа 10 мс: картинки не декодировать и не перекодировать, только стримить.
@@ -109,9 +114,13 @@ getTask(env, taskId) → { state: "queued"|"running"|"done"|"failed", url?, text
 
 Экраны:
 1. **Фото** — `<input type=file accept="image/*">` (галерея или камера). Строка о приватности: «Фото отправляется в RunningHub только для генерации и не хранится».
-2. **Подготовка** — сначала уменьшить фото до ≤ 2048 по длинной стороне (`createImageBitmap` с resize; лимит canvas на iOS). MediaPipe Face Detector (`@mediapipe/tasks-vision`, точная версия с jsdelivr): лиц 0 или >1 → понятное сообщение, дальше не пускать (это быстрая предпроверка, настоящая модерация — validate на сервере). Кроп как в оригинале (crop_face `square=true`, `padding=0.08`): квадрат по рамке лица с запасом, чтобы влезли волосы и плечи — рамка MediaPipe ýже, чем у Google Vision, коэффициент подобрать на нескольких фото; ограничить краями → 1024×1024 JPEG q≈0.9 (перекодирование убирает EXIF). Модель не загрузилась → ручной кроп пальцем/мышью (перетащить, масштаб). Выбор эмоций (чипы, ≤ `maxEmotions`), пол (необязательно), Turnstile, кнопка «Сделать стикеры».
+2. **Подготовка** — сначала уменьшить фото до ≤ 2048 по длинной стороне (`createImageBitmap` с resize; лимит canvas на iOS). MediaPipe Face Detector (`@mediapipe/tasks-vision`, точная версия с jsdelivr): лиц 0 или >1 → понятное сообщение, дальше не пускать (это быстрая предпроверка, настоящая модерация — validate на сервере). Кроп как в оригинале (crop_face `square=true`, `padding=0.08`): квадрат по рамке лица с запасом, чтобы влезли волосы и плечи — рамка MediaPipe ýже, чем у Google Vision, коэффициент подобрать на нескольких фото; ограничить краями → 1024×1024 JPEG q≈0.9 (перекодирование убирает EXIF). Модель не загрузилась → ручной кроп пальцем/мышью (перетащить, масштаб). Выбор эмоций (чипы, ≤ `maxEmotions`; по умолчанию выбраны все), пол (необязательно), Turnstile, кнопка «Сделать стикеры».
+Если `canCreate: false` — вместо формы экран «Ваш пак уже готов» (кнопка «Открыть», если в `localStorage["sc.last"]` есть пак младше 24 ч) либо «С этого устройства пак уже сделан».
 3. **Генерация** — этап словами («Проверяем фото» → «Рисуем базовый стикер» → «Эмоции»), сетка карточек-заглушек, заполняются по мере готовности, общий прогресс-бар (готово N из M), у эмоции на повторной попытке — «попытка 2». `jobId` в `localStorage["sc.job"]` (с датой): при возврате на страницу опрос продолжается; `visibilitychange` → сразу опрос. `rejected` → причина + «Выбрать другое фото».
 4. **Результат** — каждая картинка: зелёный (#00FF00) → прозрачность с подавлением зелёной каймы (despill; у краёв бывает тёмно-зелёная тень — тоже убрать), белая обводка сохраняется, 512×512 PNG. На телефоне «Поделиться» (`navigator.share({files})` → Фото / Telegram), на компьютере «Скачать всё» (ZIP, JSZip точной версии) и по одной. Во встроенных браузерах (Telegram, Instagram — по user agent) подсказка «Откройте в браузере».
 - Нет `createImageBitmap`/`fetch`/`Promise.allSettled` → «Обновите браузер».
 - Стиль — дизайн-система портфолио «Lighthouse»: `<link rel="stylesheet" href="https://eyeanton.github.io/design-system.css">`, тёмная, mobile-first, отступы 16px, без горизонтального скролла. Нельзя: звёздочки ✦, сетка на фоне, грязные размытые градиенты.
 - Тексты по-русски (EN — позже).
+
+## Потом
+- Попап во время генерации: «оставьте контакт — пришлю стикерпак» (не делаем сейчас).

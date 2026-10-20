@@ -24,12 +24,16 @@
     <h2 class="h" id="h-photo">1. Фото</h2>
     <div class="surface pad">
       <p class="closed" id="closed" hidden>На сегодня лимит паков исчерпан. Загляните завтра.</p>
+      <div id="blocked" hidden>
+        <h3 class="sub" id="blocked-title">Ваш пак уже готов</h3>
+        <p class="hint" id="blocked-msg"></p>
+        <button type="button" class="btn" id="open-last" hidden>Открыть</button>
+      </div>
       <label class="btn drop" id="pick">
         <input type="file" id="file" accept="image/*">
         Выбрать фото
       </label>
       <p class="hint">Подойдёт портрет, где виден один человек. Можно сделать снимок камерой.</p>
-      <p class="hint" id="left" hidden></p>
       <p class="hint privacy">Фото отправляется в RunningHub только для генерации и не хранится.</p>
     </div>
   </section>

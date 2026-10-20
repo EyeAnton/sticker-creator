@@ -21,6 +21,7 @@ export const LIBS = {
 
 export const POLL_MS = 4000;
 export const JOB_KEY = 'sc.job';
+export const DEVICE_KEY = 'sc.device';
 export const JOB_TTL_MS = 24 * 3600 * 1000;
 
 /* ---------------- подделка API по контракту SPEC ---------------- */
@@ -59,7 +60,7 @@ export async function mockFetch(path, opts = {}) {
   await sleep(150);
   const json = (status, body) => ({ ok: status < 400, status, json: async () => body });
   if (path === '/api/config') {
-    return json(200, { emotions: EMOTIONS, maxEmotions: 6, turnstileSiteKey: 'mock', open: true, leftToday: 2 });
+    return json(200, { emotions: EMOTIONS, maxEmotions: 10, turnstileSiteKey: 'mock', open: true, canCreate: true });
   }
   if (path === '/api/jobs' && opts.method === 'POST') {
     const f = opts.body;
