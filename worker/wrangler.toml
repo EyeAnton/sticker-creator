@@ -1,0 +1,19 @@
+name = "sticker-creator"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+
+# KV для задач, счётчиков лимитов и отклонённых фото.
+# Создать: npx wrangler kv namespace create JOBS → вписать id сюда.
+[[kv_namespaces]]
+binding = "JOBS"
+id = "REPLACE_WITH_KV_ID"
+
+[vars]
+RH_MODE = "stub"
+ALLOWED_ORIGINS = "https://eyeanton.github.io,http://localhost:8000"
+MAX_EMOTIONS = "6"
+PER_IP_DAY = "2"
+GLOBAL_DAY = "30"
+TURNSTILE_SITE_KEY = "1x00000000000000000000AA"
+
+# Секреты (не здесь!): npx wrangler secret put RUNNINGHUB_API_KEY | TURNSTILE_SECRET | IP_SALT
