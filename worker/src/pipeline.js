@@ -37,15 +37,18 @@ export async function runsLeft(env) {
   return n < Number(env.RUNS_DAY);
 }
 
+// Ответ модерации/QA: JSON {"status": 0|1, "failureReason"?}; запасной формат — строка PASS / FAIL: <причина>.
 function parseStatus(text) {
+  const s = String(text || "");
   try {
-    const m = String(text).match(/\{[\s\S]*\}/);
-    const j = JSON.parse(m ? m[0] : text);
-    if (typeof j.status !== "number") return null;
-    return j;
-  } catch {
-    return null;
-  }
+    const m = s.match(/\{[\s\S]*\}/);
+    const j = JSON.parse(m ? m[0] : s);
+    if (typeof j.status === "number") return j;
+  } catch {}
+  if (/^\s*PASS\b/i.test(s)) return { status: 0 };
+  const f = s.match(/^\s*FAIL\b\s*:?\s*(.*)/i);
+  if (f) return { status: 1, failureReason: f[1].trim() };
+  return null;
 }
 
 async function reject(env, job, message) {
