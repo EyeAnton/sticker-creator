@@ -9,10 +9,12 @@ const LABELS = { base: 'Базовый', wink: 'Подмигивание', kiss_
 const label = id => LABELS[id] || id;
 const STAGES = { validate: 'Проверяем фото', restyle: 'Рисуем базовый стикер', emotions: 'Рисуем эмоции', done: 'Готово' };
 
-const st = { memDevice: '', cfg: null, cfgErr: null, src: null, autoRect: null, emotions: new Set(), gender: '', token: '', turnstileId: null, job: null, timer: null, polling: false, fails: 0, results: [], urls: [], crop: null };
+const st = { memDevice: '', cfg: null, cfgErr: null, src: null, autoRect: null, emotions: new Set(), gender: '', token: '', turnstileId: null, job: null, timer: null, polling: false, fails: 0, results: [], urls: [], crop: null, proc: {}, redraw: new Set() };
 
 /* ---------- API ---------- */
 const imgUrl = p => (MOCK || /^assets\//.test(p) ? p : API_BASE + p);
+// картинка эмоции после перерисовки лежит по тому же адресу — номер попытки сбивает кэш браузера
+const stickerUrl = s => { const u = imgUrl(s.image); return u + (u.includes('?') ? '&' : '?') + 'v=' + (s.attempt || 0); };
 async function api(path, opts) {
   const res = await (MOCK ? mockFetch(path, opts) : fetch(API_BASE + path, opts));
   let body = null;
@@ -98,7 +100,7 @@ function reset() {
   clearTimeout(st.timer); st.timer = null;
   clearJob(); st.job = null; st.src = null; st.token = MOCK ? 'mock' : '';
   for (const u of st.urls) URL.revokeObjectURL(u);
-  st.urls = []; st.results = [];
+  st.urls = []; st.results = []; st.proc = {}; st.redraw = new Set();
   $('file').value = '';
   $('gen-grid').textContent = '';
   if (st.turnstileId != null) window.turnstile?.reset(st.turnstileId);
@@ -238,7 +240,7 @@ function startGen(first) {
   show('s-gen');
   $('gen-end').hidden = true; $('gen-keep').hidden = false; warn($('net'), '');
   $('gen-grid').textContent = '';
-  st.fails = 0;
+  st.fails = 0; st.proc = {}; st.redraw = new Set();
   renderGen(first || { stage: 'validate', stickers: [{ id: 'base', state: 'queued' }, ...(st.job.emotions || []).map(id => ({ id, state: 'queued' }))] });
   poll();
 }
@@ -254,10 +256,12 @@ async function poll() {
   st.polling = true;
   const id = st.job.jobId;
   try {
-    const j = await api(`/api/jobs/${id}`);
+    let j = await api(`/api/jobs/${id}`);
     if (!st.job || st.job.jobId !== id) return;
     st.fails = 0; warn($('net'), '');
-    if (j.stage === 'done') { st.polling = false; return await finish(j); }
+    j = await inspect(j, id);
+    if (!st.job || st.job.jobId !== id) return;
+    if (j.stage === 'done' && !awaitingRetry(j)) { st.polling = false; return await finish(j); }
     renderGen(j);
     if (j.stage === 'rejected' || j.stage === 'failed') return endGen(j);
     schedule();
@@ -266,6 +270,44 @@ async function poll() {
     if (++st.fails >= 3) warn($('net'), 'Связь пропала, пробуем ещё раз…');
     schedule();
   } finally { st.polling = false; }
+}
+
+/* ---------- проверка заливки: каждый готовый стикер → заливка фона → брак эмоции уходит на перерисовку ---------- */
+function stale(s) { return !st.proc[s.id] || st.proc[s.id].attempt !== (s.attempt || 0); }
+function bad(id) { const p = st.proc[id]; return !p || p.failed || p.verdict !== 'ok'; }
+function isDone(s) { return s.state === 'done' && s.image; }
+
+// эмоция с браком, которую ещё не удалось отправить на перерисовку (сеть / задача занята) — пак не завершаем
+function awaitingRetry(j) { return j.stickers.some(s => isDone(s) && s.id !== 'base' && !stale(s) && st.proc[s.id].verdict && st.proc[s.id].verdict !== 'ok' && !st.proc[s.id].retried && !st.proc[s.id].giveUp); }
+
+async function inspect(j, jobId) {
+  for (const s of j.stickers) {
+    if (!isDone(s) || !stale(s)) continue;
+    const attempt = s.attempt || 0;
+    let p;
+    try {
+      const r = await fetch(stickerUrl(s));
+      if (!r.ok) throw new Error('img');
+      p = { attempt, ...await toSticker(await r.blob()) };
+    } catch { p = { attempt, failed: true }; }
+    st.proc[s.id] = p;
+    st.redraw.delete(s.id);
+    if (!st.job || st.job.jobId !== jobId) return j;
+  }
+  for (const s of j.stickers) {
+    const p = st.proc[s.id];
+    if (!isDone(s) || s.id === 'base' || !p || stale(s) || !p.verdict || p.verdict === 'ok' || p.retried || p.giveUp) continue;
+    try {
+      j = await api(`/api/jobs/${jobId}/retry/${s.id}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason: p.verdict }) });
+      p.retried = true; st.redraw.add(s.id);
+    } catch (e) {
+      // 409 (задача занята) и сеть — повторим на следующем опросе; остальное (400/404/…) — перерисовки не будет
+      p.tries = (p.tries || 0) + 1;
+      if ((e.status && e.status !== 409) || p.tries >= 3) p.giveUp = true;
+    }
+    if (!st.job || st.job.jobId !== jobId) return j;
+  }
+  return j;
 }
 
 function renderGen(j) {
@@ -286,11 +328,15 @@ function renderGen(j) {
     }
     c.className = `card ${s.state}`;
     const pic = c.querySelector('.pic');
-    c.querySelector('small').textContent = s.state === 'running' && s.attempt > 1 ? `попытка ${s.attempt}` : '';
-    if (s.state === 'done' && s.image) {
-      if (!pic.querySelector('img')) { pic.textContent = ''; const im = new Image(); im.alt = label(s.id); im.src = imgUrl(s.image); pic.append(im); }
+    const redraw = st.redraw.has(s.id), p = st.proc[s.id];
+    c.querySelector('small').textContent = redraw ? 'перерисовываем' : s.state === 'running' && s.attempt > 1 ? `попытка ${s.attempt}` : s.id === 'base' && isDone(s) && p && bad('base') ? 'не войдёт в пак' : '';
+    if (isDone(s)) {
+      const im0 = pic.querySelector('img');
+      if (!im0 || im0.dataset.v !== String(s.attempt || 0)) {
+        pic.textContent = ''; const im = new Image(); im.alt = label(s.id); im.dataset.v = String(s.attempt || 0); im.src = stickerUrl(s); pic.append(im);
+      }
     } else {
-      pic.textContent = { queued: 'В очереди', running: 'Рисуем…', failed: 'Не получилось' }[s.state] || '';
+      pic.textContent = redraw && s.state === 'running' ? 'Перерисовываем…' : { queued: 'В очереди', running: 'Рисуем…', failed: 'Не получилось' }[s.state] || '';
     }
   }
 }
@@ -309,21 +355,16 @@ function endGen(j) {
 async function finish(j) {
   renderGen(j);
   $('stage').textContent = 'Готовим прозрачные PNG…';
-  const want = j.stickers.filter(s => s.state === 'done' && s.image);
-  const out = await Promise.allSettled(want.map(async s => {
-    const r = await fetch(imgUrl(s.image));
-    if (!r.ok) throw new Error('img');
-    return { id: s.id, blob: await toSticker(await r.blob()) };
-  }));
-  st.results = out.filter(o => o.status === 'fulfilled').map(o => o.value);
+  // в пак — только стикеры, у которых заливка прошла проверку; базовый с браком просто не включается
+  st.results = j.stickers.filter(s => isDone(s) && !stale(s) && !bad(s.id)).map(s => ({ id: s.id, blob: st.proc[s.id].blob }));
   if (!st.results.length) {
-    endGen({ stage: 'failed', message: 'Не удалось получить картинки. Возможно, они уже удалены — сделайте стикеры заново.' });
+    endGen({ stage: 'failed', message: 'Не удалось получить чистые картинки. Попробуйте сделать стикеры заново.' });
     return;
   }
-  showResult(j.stickers.length - st.results.length);
+  showResult(j.stickers.length - st.results.length, j.stickers.some(s => s.id === 'base' && isDone(s) && bad('base')));
 }
 
-function showResult(lost) {
+function showResult(lost, baseOut) {
   show('s-result');
   clearJob();
   for (const u of st.urls) URL.revokeObjectURL(u);
@@ -340,7 +381,7 @@ function showResult(lost) {
   }
   const note = $('res-note');
   note.hidden = !lost;
-  note.textContent = lost ? `Не получилось: ${lost}. Остальные готовы.` : '';
+  note.textContent = lost ? `Не получилось: ${lost}. Остальные готовы.${baseOut ? ' Базовый стикер в пак не вошёл: фон на нём не удалось убрать чисто.' : ''}` : '';
   $('inapp').hidden = !isInApp();
   const canShare = canShareFiles(asFiles(st.results));
   $('share-btn').hidden = !canShare;

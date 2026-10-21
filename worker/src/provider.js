@@ -34,9 +34,10 @@ const stub = {
       return { state: "done", text };
     }
     if (kind === "qa") {
-      // tag = "<emotion>#<attempt>"; demon: первые 2 попытки QA отклоняет
-      const [emotion, attempt] = tag.split("#");
-      const bad = emotion === "demon" && Number(attempt) <= 2;
+      // tag = "<эмоция|base>#<попытка>[#gender]"; demon: первые 2 попытки QA отклоняет;
+      // база при gender=stub-base-qa: отклоняет первую генерацию
+      const [emotion, attempt, gender] = tag.split("#");
+      const bad = (emotion === "demon" && Number(attempt) <= 2) || (emotion === "base" && gender === "stub-base-qa" && Number(attempt) <= 1);
       return { state: "done", text: JSON.stringify(bad ? { status: 1, failureReason: "stub qa" } : { status: 0 }) };
     }
     return { state: "done", url: "stub://img/" + encodeURIComponent(tag || kind) };

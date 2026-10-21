@@ -5,6 +5,7 @@ import { gate } from "./gate.js";
 
 export const EMOTION_IDS = prompts.emotions.map((e) => e.id);
 const MAX_ATTEMPTS = 4;
+const MAX_BASE_QA = 2; // генераций базового стикера из-за QA (плюс один повтор при ошибке запроса — restyleRetry)
 const RESTYLE_PAUSE_MS = 5000;
 
 const MSG = {
@@ -14,6 +15,7 @@ const MSG = {
   validateFail: "Не удалось проверить фото. Попробуйте ещё раз.",
   notFit: "Фото не подходит. Попробуйте другое.",
   restyleFail: "Не получилось нарисовать базовый стикер. Попробуйте ещё раз.",
+  baseQaFail: "Базовый стикер получился неаккуратным. Попробуйте ещё раз или выберите другое фото.",
 };
 
 // Порядок моделей для следующей попытки. prev: "fast"|"pro"|null, reason: "qa"|"refused"|"error".
@@ -93,7 +95,7 @@ export function publicJob(jobId, job) {
   const stickers = Object.entries(job.stickers).map(([id, s]) => {
     const o = { id, state: s.state };
     if (s.state === "done") o.image = `/api/jobs/${jobId}/img/${id}`;
-    if (s.state === "running" && s.attempt) o.attempt = s.attempt;
+    if ((s.state === "running" || s.state === "done") && s.attempt) o.attempt = s.attempt;
     return o;
   });
   const out = { jobId, stage: job.stage, stickers };
@@ -134,6 +136,7 @@ async function stepRestyle(env, job) {
     job.restyleRetry = 1;
     return startRestyle(env, job);
   }
+  if (base.qaTask) return stepBaseQa(env, job, base);
   const t = await getTask(env, base.task);
   if (t.state === "queued" || t.state === "running") return;
   if (t.refused) return reject(env, job, MSG.refused);
@@ -145,8 +148,31 @@ async function stepRestyle(env, job) {
     base.state = "failed";
     return fail(job, MSG.restyleFail);
   }
-  base.state = "done";
+  if (!(await spend(env))) {
+    base.state = "failed";
+    return fail(job, MSG.closed);
+  }
+  // QA базового стикера (в блюпринте его нет): тот же qa_single, что у эмоций
   base.url = t.url;
+  base.qaTask = await startTask(env, "qa", {
+    image1: job.photoRef, image2: t.url, meta: `base#${(job.baseQaFails || 0) + 1}#${job.gender}`,
+  });
+}
+
+async function stepBaseQa(env, job, base) {
+  const t = await getTask(env, base.qaTask);
+  if (t.state === "queued" || t.state === "running") return;
+  const r = t.state === "done" ? parseStatus(t.text) : null;
+  if (!(r && r.status === 0)) {
+    job.baseQaFails = (job.baseQaFails || 0) + 1;
+    if (job.baseQaFails >= MAX_BASE_QA) {
+      base.state = "failed";
+      return fail(job, MSG.baseQaFail);
+    }
+    return startRestyle(env, job);
+  }
+  base.state = "done";
+  base.qaTask = null;
   job.stage = "emotions";
   for (const [id, s] of Object.entries(job.stickers)) {
     if (id === "base") continue;
@@ -155,7 +181,7 @@ async function stepRestyle(env, job) {
   }
 }
 
-async function startAttempt(env, job, id, s, reason) {
+export async function startAttempt(env, job, id, s, reason) {
   if (s.attempt >= MAX_ATTEMPTS) {
     s.state = "failed";
     return;
@@ -201,6 +227,23 @@ async function stepEmotion(env, job, id, s) {
   }
   s.lastFail = "qa";
   return startAttempt(env, job, id, s, "qa");
+}
+
+// Брак эмоции, найденный в браузере после заливки: стикер обратно в работу (та же модель, как брак QA).
+// Бросает при ошибке провайдера — стикер остаётся как был. Лимит попыток и RUNS_DAY — внутри startAttempt.
+export async function retryEmotion(env, job, id, reason) {
+  const s = job.stickers[id];
+  const prev = { ...s };
+  Object.assign(s, { state: "running", lastFail: reason });
+  try {
+    await startAttempt(env, job, id, s, "qa");
+  } catch (e) {
+    Object.keys(s).forEach((k) => delete s[k]);
+    Object.assign(s, prev);
+    throw e;
+  }
+  if (s.state === "running") job.stage = "emotions";
+  job.settled = false; // исход пака мог измениться — зафиксировать заново
 }
 
 // Один шаг. Возвращает true, если задачу надо сохранить.
