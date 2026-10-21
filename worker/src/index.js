@@ -1,4 +1,4 @@
-import { EMOTION_IDS, createJob, advance, publicJob, spend, runsLeft, today } from "./pipeline.js";
+import { EMOTION_IDS, createJob, advance, retryEmotion, publicJob, spend, runsLeft, today } from "./pipeline.js";
 import { fetchImage } from "./provider.js";
 import { gate } from "./gate.js";
 export { Gate } from "./gate.js";
@@ -17,6 +17,8 @@ const TEXT = {
   closed: "На сегодня лимит генераций исчерпан. Загляните завтра.",
   upstream: "Сервис генерации сейчас недоступен. Попробуйте чуть позже.",
   not_found: "Задача не найдена или устарела.",
+  not_ready: "Этот стикер сейчас нельзя перерисовать.",
+  job_busy: "Задача занята, повторите через секунду.",
 };
 
 function allowedOrigins(env) {
@@ -224,9 +226,9 @@ async function handleCreate(request, env) {
     !emotions.every((e) => EMOTION_IDS.includes(e))
   ) return err(request, env, 400, "bad_input");
 
-  // "stub-reject" — только для проверки ветки отказа в stub-режиме
+  // "stub-reject" / "stub-base-qa" — только для проверки веток в stub-режиме (отказ validate / брак QA базы)
   const gender = String(form.get("gender") || "");
-  const genders = env.PROVIDER_MODE === "live" ? ["", "male", "female"] : ["", "male", "female", "stub-reject"];
+  const genders = env.PROVIDER_MODE === "live" ? ["", "male", "female"] : ["", "male", "female", "stub-reject", "stub-base-qa"];
   if (!genders.includes(gender)) return err(request, env, 400, "bad_input");
 
   const bytes = await photo.arrayBuffer();
@@ -318,6 +320,45 @@ async function handleStatus(request, env, jobId) {
   }
 }
 
+// Брак стикера по проверке заливки в браузере → ещё одна попытка той же моделью (не больше MAX_ATTEMPTS на эмоцию).
+async function handleRetry(request, env, jobId, sid) {
+  const origin = request.headers.get("Origin");
+  if (!origin || !allowedOrigins(env).includes(origin)) return err(request, env, 403, "origin");
+  if (Number(request.headers.get("Content-Length")) > 1024) return err(request, env, 413, "too_large");
+  let reason;
+  try {
+    reason = JSON.parse(await request.text()).reason;
+  } catch {
+    return err(request, env, 400, "bad_input");
+  }
+  if (sid === "base" || (reason !== "leak" && reason !== "nobg")) return err(request, env, 400, "bad_input");
+
+  const g = gate(env, "job:" + jobId);
+  const seq = await g.lock(LOCK_MS);
+  if (seq === null) return err(request, env, 409, "job_busy");
+  let next;
+  try {
+    const job = await loadJob(env, jobId);
+    if (!job) return err(request, env, 404, "not_found");
+    if ((job.seq || 0) < seq) return err(request, env, 409, "job_busy"); // отставшая копия из KV
+    const s = job.stickers[sid];
+    if (!s) return err(request, env, 404, "not_found");
+    if (s.state !== "done") return err(request, env, 409, "not_ready");
+    try {
+      await retryEmotion(env, job, sid, reason);
+      await settle(env, jobId, job);
+    } catch {
+      return err(request, env, 502, "upstream");
+    }
+    job.seq = Math.max(seq, job.seq || 0) + 1;
+    await env.JOBS.put("job:" + jobId, JSON.stringify(job), { expirationTtl: JOB_TTL });
+    next = job.seq;
+    return json(request, env, publicJob(jobId, job));
+  } finally {
+    await g.unlock(next).catch(() => {});
+  }
+}
+
 async function handleImage(request, env, jobId, sid) {
   const job = await loadJob(env, jobId);
   const s = job && job.stickers[sid];
@@ -347,6 +388,7 @@ export default {
       if (request.method === "POST" && path === "/api/jobs") return await handleCreate(request, env);
       let m;
       if (request.method === "GET" && (m = path.match(/^\/api\/jobs\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/))) return await handleStatus(request, env, m[1]);
+      if (request.method === "POST" && (m = path.match(/^\/api\/jobs\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/retry\/([a-z_]{1,32})$/))) return await handleRetry(request, env, m[1], m[2]);
       if (request.method === "GET" && (m = path.match(/^\/api\/jobs\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/img\/([a-z_]{1,32})$/))) return await handleImage(request, env, m[1], m[2]);
       return err(request, env, 404, "not_found");
     } catch {
