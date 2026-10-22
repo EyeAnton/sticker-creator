@@ -1,16 +1,16 @@
-// Юнит-тест заливки фона на синтетике (картинки строятся в тесте): node tools/chroma.test.mjs
+// Юнит-тест вырезки фона и белой обводки на синтетике (картинки строятся в тесте): node tools/chroma.test.mjs
 import assert from "node:assert/strict";
-import { fillCut, STICKER as S } from "../js/chroma.js";
+import { cutSticker as fillCut, STICKER as S } from "../js/chroma.js";
 
 // фигура — эллипс (кожа, глаза), вокруг — белая обводка 10 px; bg(x, y) → [r, g, b]
-function scene({ bg, cx = 256, cy = 256, rx = 150, ry = 190, hole = null, outline = [255, 255, 255] }) {
+function scene({ bg, cx = 256, cy = 256, rx = 150, ry = 190, hole = null, outline = [255, 255, 255], skin = [196, 140, 110] }) {
   const d = new Uint8ClampedArray(S * S * 4);
   for (let y = 0; y < S; y++) {
     for (let x = 0; x < S; x++) {
       const e = Math.hypot((x - cx) / rx, (y - cy) / ry);
       const eo = Math.hypot((x - cx) / (rx + 10), (y - cy) / (ry + 10));
       let c;
-      if (e <= 1) c = Math.hypot(x - cx, y - (cy - 10)) < 12 ? [30, 20, 20] : [196, 140, 110];
+      if (e <= 1) c = Math.hypot(x - cx, y - (cy - 10)) < 12 ? [30, 20, 20] : skin;
       else if (eo <= 1) c = outline;
       else c = bg(x, y);
       // дырка в обводке: полоса 6 px слева от фигуры
@@ -45,13 +45,15 @@ const cases = [
   ["зелёный фон", scene({ bg: green }), "ok"],
   ["серый фон", scene({ bg: grayFlat }), "ok"],
   ["серый текстурный фон", scene({ bg: grayTex }), "ok"],
-  ["дырка в обводке", scene({ bg: green, hole: true }), "leak"],
+  ["дырка в обводке модели (не мешает)", scene({ bg: green, hole: true }), "ok"],
+  ["лицо цвета фона (съедено)", scene({ bg: green, skin: [8, 250, 8] }), "leak"],
   ["белый фон", scene({ bg: white }), "nobg"],
   ["обводка касается края", scene({ bg: grayTex, cx: 256, rx: 246, ry: 190 }), "ok"],
   ["обводка в углу (фон в кармане)", scene({ bg: green, cx: 256, cy: 256, rx: 246, ry: 246 }), "ok"],
   ["плечи обрезаны краем, зелёный", bust({ bg: green }), "ok"],
   ["плечи обрезаны краем, серый текстурный", bust({ bg: grayTex }), "ok"],
-  ["нет обводки совсем (брак модели)", bust({ bg: green, outline: false }), "leak"],
+  ["нет обводки совсем (брак модели)", bust({ bg: green, outline: false }), "ok"],
+  ["нет обводки совсем, серый текстурный", bust({ bg: grayTex, outline: false }), "ok"],
 ];
 
 console.log("случай".padEnd(34), "убрано  лицо-протечка  вердикт");
@@ -71,6 +73,18 @@ for (const [name, data, want] of cases) {
     if (a > 0 && a < 255 && (r < 250 || g < 250 || b < 250)) fringe++;
   }
   assert.equal(fringe, 0, name + ": полупрозрачные пиксели только белые");
+}
+
+// обводка снизу гарантирована: плечи обрезаны краем кадра, под срезом — белая полоса, дальше прозрачно
+for (const [name, bgf, ol] of [["с обводкой модели", green, true], ["без обводки модели", grayTex, false]]) {
+  const data = bust({ bg: bgf, outline: ol });
+  fillCut(data);
+  const at = (x, y) => [...data.slice((y * S + x) * 4, (y * S + x) * 4 + 4)];
+  const band = at(256, S - 8);   // внутри полосы обводки под срезом
+  assert.deepEqual(band, [255, 255, 255, 255], name + ": белая обводка снизу");
+  assert.equal(at(256, S - 1)[3], 0, name + ": ниже полосы прозрачно");
+  assert.equal(at(256, 200)[3], 255, name + ": фигура на месте");
+  console.log(`  обводка снизу ${name}: ok`);
 }
 
 // фон «карман» между обводкой и краем кадра (угол) тоже убран, а не остался зелёным

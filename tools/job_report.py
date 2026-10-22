@@ -2,7 +2,7 @@
 """Разбор задачи по id: python3 tools/job_report.py <jobId> [--out DIR] [--no-open]
 
 Берёт задачу из прод-KV (wrangler, нужен вход в Cloudflare), качает все картинки (фото, базовый стикер, каждая попытка
-каждой эмоции) и собирает один самодостаточный report.html: исходник / заливка на шахматке / маска, вердикт заливки (считается
+каждой эмоции) и собирает один самодостаточный report.html: исходник / вырезка на шахматке / маска, вердикт заливки (считается
 тем же js/chroma.js, что и на странице), ответ QA, что сообщил браузер, журнал событий. Картинки RunningHub живут недолго —
 отчёт лучше собирать сразу после прогона; сам отчёт хранит их внутри.
 
@@ -123,7 +123,7 @@ async function card(parent, url, caption, extra) {
   x.drawImage(im, 0, 0, S, S);
   const raw = x.getImageData(0, 0, S, S);
   const d = new ImageData(new Uint8ClampedArray(raw.data), S, S);
-  const r = fillCut(d.data);
+  const r = cutSticker(d.data);
   const a = el('canvas', 'ck'); a.width = a.height = S; a.getContext('2d').putImageData(d, 0, 0);
   const m = el('canvas'); m.width = m.height = S; const mx = m.getContext('2d');
   const mk = new ImageData(new Uint8ClampedArray(raw.data), S, S);
@@ -131,8 +131,8 @@ async function card(parent, url, caption, extra) {
   mx.putImageData(mk, 0, 0); mx.strokeStyle = '#0ff'; mx.lineWidth = 2; mx.strokeRect(205, 179, 102, 102);
   const col = (cv, t) => { const w = el('div'); w.append(cv, el('div', 'cap', t)); return w; };
   const o = im.cloneNode();
-  const info = el('div', '', `${caption}<br>заливка (эта страница): убрано ${(r.removed * 100).toFixed(1)}%, протечка в лицо ${(r.leak * 100).toFixed(1)}% → <b class="${r.verdict === 'ok' ? 'ok' : 'bad'}">${r.verdict}</b>${extra || ''}`);
-  row.append(col(o, 'исходник'), col(a, 'после заливки (шахматка = прозрачно)'), col(m, 'маска: красное = залито как фон, рамка = зона лица'), info);
+  const info = el('div', '', `${caption}<br>вырезка (эта страница): убрано ${(r.removed * 100).toFixed(1)}%, протечка в лицо ${(r.leak * 100).toFixed(1)}% → <b class="${r.verdict === 'ok' ? 'ok' : 'bad'}">${r.verdict}</b>${extra || ''}`);
+  row.append(col(o, 'исходник'), col(a, 'после вырезки (шахматка = прозрачно)'), col(m, 'маска: красное = вырезано как фон, рамка = зона лица'), info);
   parent.append(row);
   return r;
 }
