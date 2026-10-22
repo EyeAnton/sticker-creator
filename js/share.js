@@ -4,7 +4,7 @@ import { LIBS, FORCE_INAPP } from './config.js';
 export const isInApp = () => FORCE_INAPP ||
   /Telegram|Instagram|FBAN|FBAV|FB_IAB|Line\/|VKClient|MicroMessenger|; wv\)|Snapchat|TikTok|Twitter/i.test(navigator.userAgent);
 
-export const asFiles = items => items.map(s => new File([s.blob], `${s.id}.png`, { type: 'image/png' }));
+export const asFiles = items => items.map(s => new File([s.blob], s.name || `${s.id}.png`, { type: 'image/png' }));
 
 export function canShareFiles(files) {
   try { return !!navigator.canShare && navigator.canShare({ files }); } catch { return false; }
@@ -37,6 +37,6 @@ function loadJSZip() {
 export async function zipAll(items) {
   const JSZip = await loadJSZip();
   const zip = new JSZip();
-  for (const s of items) zip.file(`${s.id}.png`, s.blob);
+  for (const s of items) zip.file(s.name || `${s.id}.png`, s.blob);
   return zip.generateAsync({ type: 'blob' });
 }

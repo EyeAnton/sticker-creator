@@ -5,11 +5,12 @@ import { toSticker } from './chroma.js';
 import { isInApp, asFiles, canShareFiles, shareFiles, download, zipAll } from './share.js';
 
 const $ = id => document.getElementById(id);
+const LEAD = 'Загрузите портрет — через пару минут стикеры со всеми эмоциями готовы для Telegram и мессенджеров.';
 const LABELS = { base: 'Базовый', wink: 'Подмигивание', kiss_heart: 'Поцелуй', heart_eyes: 'Влюблённый', hearts_around: 'Сердечки', halo: 'Ангел', laughing: 'Смех', tears: 'Слёзы', smile: 'Улыбка', demon: 'Чертёнок', blush: 'Смущение' };
 const label = id => LABELS[id] || id;
 const STAGES = { validate: 'Проверяем фото', restyle: 'Рисуем базовый стикер', emotions: 'Рисуем эмоции', done: 'Готово' };
 
-const st = { memDevice: '', cfg: null, cfgErr: null, src: null, autoRect: null, emotions: new Set(), gender: '', token: '', turnstileId: null, job: null, timer: null, polling: false, fails: 0, results: [], urls: [], crop: null, proc: {}, redraw: new Set() };
+const st = { memDevice: '', cfg: null, cfgErr: null, src: null, autoRect: null, gender: '', token: '', turnstileId: null, job: null, timer: null, polling: false, fails: 0, results: [], urls: [], crop: null, proc: {}, redraw: new Set(), packCache: new Map() };
 
 /* ---------- API ---------- */
 const imgUrl = p => (MOCK || /^assets\//.test(p) ? p : API_BASE + p);
@@ -48,8 +49,11 @@ function init() {
   $('prep-back').onclick = $('gen-again').onclick = $('again-btn').onclick = reset;
   $('manual-btn').onclick = toggleManual;
   $('go').onclick = submit;
+  $('packs-btn').onclick = openPacks;
   $('share-btn').onclick = onShare;
   $('zip-btn').onclick = onZip;
+  $('lightbox').onclick = e => { if (e.target === $('lightbox') || e.target.closest('.lb-close')) closeLightbox(); };
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLightbox(); });
   document.addEventListener('visibilitychange', () => { if (!document.hidden && st.job && !$('s-gen').hidden) poll(); });
   for (const b of $('gender').children) b.onclick = () => {
     st.gender = b.dataset.v;
@@ -83,14 +87,15 @@ const writeLast = j => { try { localStorage.setItem(LAST_KEY, JSON.stringify(j))
 
 async function loadConfig() {
   try { st.cfg = await api('/api/config?device=' + encodeURIComponent(deviceId())); st.cfgErr = null; } catch (e) { st.cfgErr = e; return; }
-  const can = st.cfg.canCreate !== false;
+  const can = st.cfg.canCreate !== false; // false — только пока идёт другой пак с этого устройства/IP
+  $('packs-btn').hidden = !readPacks().length;
   $('closed').hidden = st.cfg.open || !can;
   $('pick').hidden = !(st.cfg.open && can);
   $('blocked').hidden = can;
   if (!can) {
     const last = readLast();
-    $('blocked-title').textContent = st.cfg.reason === 'busy' ? 'Пак уже делается' : 'Ваш пак уже готов';
-    $('blocked-msg').textContent = last ? '' : st.cfg.reason === 'busy' ? 'Дождитесь, пока он будет готов.' : 'С этого устройства пак уже сделан.';
+    $('blocked-title').textContent = 'Пак уже делается';
+    $('blocked-msg').textContent = last ? '' : 'Дождитесь, пока он будет готов, и сделайте следующий.';
     $('open-last').hidden = !last;
     $('open-last').onclick = () => { st.job = last; startGen(); };
   }
@@ -105,7 +110,7 @@ function reset() {
   $('gen-grid').textContent = '';
   if (st.turnstileId != null) window.turnstile?.reset(st.turnstileId);
   warn($('submit-err'), '');
-  $('lead').textContent = 'Загрузите портрет, выберите эмоции — через пару минут стикеры готовы для Telegram и мессенджеров.';
+  $('lead').textContent = LEAD;
   show('s-photo');
   loadConfig();
 }
@@ -145,7 +150,6 @@ async function onFile() {
   $('zoom-row').hidden = res.ok;
   $('prep-msg').hidden = true; $('prep-back').hidden = true;
   $('prep-body').hidden = false;
-  buildOptions();
   initTurnstile();
   updateGo();
 }
@@ -163,31 +167,6 @@ function toggleManual() {
   $('manual-btn').textContent = on ? 'Вернуть автокадр' : 'Подправить кадр';
   $('crop-hint').textContent = on ? 'Перетащите фото, масштаб — ползунком или щипком.' : 'Кадр подобран по лицу. Можно подправить.';
   if (!on) st.crop.set(st.src, st.autoRect);
-}
-
-function buildOptions() {
-  const box = $('emotions'); box.textContent = '';
-  const max = st.cfg.maxEmotions;
-  if (!st.emotions.size) st.cfg.emotions.forEach(i => st.emotions.add(i));
-  for (const id of st.cfg.emotions) {
-    const b = document.createElement('button');
-    b.type = 'button'; b.className = 'chip'; b.dataset.id = id; b.textContent = label(id);
-    b.onclick = () => {
-      if (st.emotions.has(id)) st.emotions.delete(id); else if (st.emotions.size < max) st.emotions.add(id);
-      syncChips(); updateGo();
-    };
-    box.append(b);
-  }
-  syncChips();
-}
-function syncChips() {
-  const max = st.cfg.maxEmotions;
-  for (const b of $('emotions').children) {
-    const on = st.emotions.has(b.dataset.id);
-    b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on));
-    b.disabled = !on && st.emotions.size >= max;
-  }
-  $('emo-count').textContent = `${st.emotions.size} из ${max}`;
 }
 
 function initTurnstile() {
@@ -208,7 +187,7 @@ function initTurnstile() {
   document.head.append(s);
 }
 
-const updateGo = () => { $('go').disabled = !(st.emotions.size >= 1 && st.token); };
+const updateGo = () => { $('go').disabled = !st.token; };
 
 /* ---------- отправка ---------- */
 async function submit() {
@@ -218,12 +197,11 @@ async function submit() {
     const blob = await toJpeg(renderRect(st.src, st.crop.rect, OUT));
     const f = new FormData();
     f.append('photo', blob, 'photo.jpg');
-    f.append('emotions', [...st.emotions].join(','));
     f.append('gender', st.gender);
     f.append('device', deviceId());
     f.append('turnstile', st.token);
     const r = await api('/api/jobs', { method: 'POST', body: f });
-    st.job = { jobId: r.jobId, t: Date.now(), emotions: [...st.emotions] };
+    st.job = { jobId: r.jobId, t: Date.now(), emotions: st.cfg.emotions };
     writeJob(st.job); writeLast(st.job);
     startGen(r);
   } catch (e) {
@@ -356,28 +334,103 @@ async function finish(j) {
   renderGen(j);
   $('stage').textContent = 'Готовим прозрачные PNG…';
   // в пак — только стикеры, у которых заливка прошла проверку; базовый с браком просто не включается
-  st.results = j.stickers.filter(s => isDone(s) && !stale(s) && !bad(s.id)).map(s => ({ id: s.id, blob: st.proc[s.id].blob }));
-  if (!st.results.length) {
+  const n = addPack(st.job.jobId);
+  const mine = j.stickers.filter(s => isDone(s) && !stale(s) && !bad(s.id)).map(s => item(n, s.id, st.proc[s.id].blob));
+  if (!mine.length) {
     endGen({ stage: 'failed', message: 'Не удалось получить чистые картинки. Попробуйте сделать стикеры заново.' });
     return;
   }
-  showResult(j.stickers.length - st.results.length, j.stickers.some(s => s.id === 'base' && isDone(s) && bad('base')));
+  st.packCache.set(st.job.jobId, mine);
+  st.results = await libraryItems();
+  showResult(j.stickers.length - mine.length, j.stickers.some(s => s.id === 'base' && isDone(s) && bad('base')));
 }
+
+/* ---------- накопление паков: сервер хранит задачу сутки, номера и id паков — в localStorage ---------- */
+const PACKS_KEY = 'sc.packs';
+const item = (pack, id, blob) => ({ pack, id, blob, name: pack === 1 ? `${id}.png` : `p${pack}_${id}.png` });
+function readPacks() {
+  try { return (JSON.parse(localStorage.getItem(PACKS_KEY)) || []).filter(p => p.jobId && Date.now() - p.t < JOB_TTL_MS); } catch { return []; }
+}
+function addPack(jobId) {
+  const list = readPacks();
+  let p = list.find(x => x.jobId === jobId);
+  if (!p) { p = { jobId, t: Date.now(), n: Math.max(0, ...list.map(x => x.n)) + 1 }; list.push(p); }
+  try { localStorage.setItem(PACKS_KEY, JSON.stringify(list)); } catch { /* приватный режим */ }
+  return p.n;
+}
+// стикеры без брака уже готового пака (у старых паков перерисовок нет)
+async function loadPack(p) {
+  const j = await api(`/api/jobs/${p.jobId}`);
+  const got = await Promise.allSettled(j.stickers.filter(isDone).map(async s => {
+    const r = await fetch(stickerUrl(s));
+    if (!r.ok) throw new Error('img');
+    const t = await toSticker(await r.blob());
+    if (t.verdict !== 'ok') throw new Error('bad');
+    return item(p.n, s.id, t.blob);
+  }));
+  return got.filter(g => g.status === 'fulfilled').map(g => g.value);
+}
+async function libraryItems() {
+  const out = [];
+  for (const p of readPacks()) {
+    if (!st.packCache.has(p.jobId)) {
+      try { st.packCache.set(p.jobId, await loadPack(p)); } catch { continue; } // пак устарел на сервере — пропускаем
+    }
+    out.push(...st.packCache.get(p.jobId));
+  }
+  return out;
+}
+async function openPacks() {
+  const b = $('packs-btn'); b.disabled = true;
+  try {
+    st.results = await libraryItems();
+    if (st.results.length) showResult(0, false);
+    else { b.hidden = true; $('lead').textContent = 'Прошлые стикеры уже удалены с сервера (хранятся сутки).'; }
+  } finally { b.disabled = false; }
+}
+
+/* ---------- страница готовых: пак = прямоугольник со всеми стикерами; ховер — наклон за мышью, клик — крупно ---------- */
+const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+function tilt(tile) {
+  tile.addEventListener('pointermove', e => {
+    if (e.pointerType !== 'mouse' || reduceMotion()) return;
+    const r = tile.getBoundingClientRect(), x = (e.clientX - r.left) / r.width - 0.5, y = (e.clientY - r.top) / r.height - 0.5;
+    tile.style.transform = `perspective(600px) rotateX(${(-y * 22).toFixed(1)}deg) rotateY(${(x * 22).toFixed(1)}deg) scale(1.6)`;
+  });
+  tile.addEventListener('pointerenter', e => { if (e.pointerType === 'mouse') tile.classList.add('hot'); });
+  tile.addEventListener('pointerleave', () => { tile.classList.remove('hot'); tile.style.transform = ''; });
+}
+function openLightbox(s, url) {
+  const lb = $('lightbox');
+  const im = lb.querySelector('img'); im.src = url; im.alt = label(s.id);
+  const a = lb.querySelector('a'); a.href = url; a.download = s.name;
+  lb.querySelector('span').textContent = label(s.id);
+  lb.hidden = false; lb.querySelector('button').focus();
+}
+function closeLightbox() { $('lightbox').hidden = true; }
 
 function showResult(lost, baseOut) {
   show('s-result');
   clearJob();
   for (const u of st.urls) URL.revokeObjectURL(u);
   st.urls = [];
-  const grid = $('res-grid'); grid.textContent = '';
-  for (const s of st.results) {
-    const url = URL.createObjectURL(s.blob); st.urls.push(url);
-    const c = document.createElement('div'); c.className = 'card';
-    c.innerHTML = '<div class="pic"><img alt=""></div><div class="cap"><span></span><a download>Скачать</a></div>';
-    const im = c.querySelector('img'); im.src = url; im.alt = label(s.id);
-    c.querySelector('span').textContent = label(s.id);
-    const a = c.querySelector('a'); a.href = url; a.download = `${s.id}.png`;
-    grid.append(c);
+  const box = $('res-grid'); box.textContent = '';
+  const packs = new Map();
+  for (const s of st.results) { if (!packs.has(s.pack)) packs.set(s.pack, []); packs.get(s.pack).push(s); }
+  for (const [n, items] of packs) {
+    const sec = document.createElement('section'); sec.className = 'pack';
+    sec.innerHTML = '<h3 class="sub"></h3><div class="pack-grid"></div>';
+    sec.querySelector('h3').textContent = `Пак ${n} · ${items.length}`;
+    const grid = sec.querySelector('.pack-grid');
+    for (const s of items) {
+      const url = URL.createObjectURL(s.blob); st.urls.push(url);
+      const t = document.createElement('button'); t.type = 'button'; t.className = 'tile';
+      t.title = t.ariaLabel = label(s.id);
+      const im = new Image(); im.alt = label(s.id); im.src = url; t.append(im);
+      tilt(t); t.onclick = () => openLightbox(s, url);
+      grid.append(t);
+    }
+    box.append(sec);
   }
   const note = $('res-note');
   note.hidden = !lost;

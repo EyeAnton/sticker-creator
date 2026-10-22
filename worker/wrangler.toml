@@ -30,11 +30,9 @@ RH_RESOLUTION = "1k"
 # Хосты результатов RunningHub (кроме runninghub.ai/.cn): точное имя бакета COS из реального ответа; шаблон *.myqcloud.com нельзя — это открытый прокси
 RH_IMG_HOSTS = "rh-hk-images-1252422369.cos.ap-hongkong.myqcloud.com"
 ALLOWED_ORIGINS = "https://eyeanton.github.io,http://localhost:8000"
-MAX_EMOTIONS = "10"
-PER_IP_DAY = "1"
 GLOBAL_DAY = "10"
 RUNS_DAY = "200"
 TURNSTILE_SITE_KEY = "0x4AAAAAAFeAR4ZK98XyO54z"
 
-# Лимиты: один удачный пак на устройство (KV dev:…, 365 дней) + страховка по IP (1 пак в сутки)
+# Лимиты: один идущий пак на устройство и на IP (KV dev:…/ip:…), потолки GLOBAL_DAY (паков в сутки) и RUNS_DAY (вызовов провайдера)
 # Секреты (не здесь!): npx wrangler secret put RUNNINGHUB_API_KEY | TURNSTILE_SECRET | IP_SALT
