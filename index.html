@@ -13,7 +13,7 @@
   <header class="head">
     <p class="eyebrow">Sticker Creator</p>
     <h1 class="t-h2">Стикерпак из&nbsp;фото</h1>
-    <p class="t-lead" id="lead">Загрузите портрет, выберите эмоции — через пару минут стикеры готовы для Telegram и мессенджеров.</p>
+    <p class="t-lead" id="lead">Загрузите портрет — через пару минут стикеры со всеми эмоциями готовы для Telegram и мессенджеров.</p>
   </header>
 
   <p class="notice warn" id="unsupported" hidden>Обновите браузер: этой странице нужны современные возможности (createImageBitmap, fetch).</p>
@@ -33,6 +33,7 @@
         <input type="file" id="file" accept="image/*">
         Выбрать фото
       </label>
+      <button type="button" class="btn quiet" id="packs-btn" hidden>Мои стикеры</button>
       <p class="hint">Подойдёт портрет, где виден один человек. Можно сделать снимок камерой.</p>
       <p class="hint privacy">Фото отправляется в RunningHub только для генерации и не хранится.</p>
     </div>
@@ -57,8 +58,6 @@
       </div>
 
       <div class="surface pad" id="opts">
-        <h3 class="sub">Эмоции <span class="muted" id="emo-count"></span></h3>
-        <div class="chips" id="emotions" role="group" aria-label="Эмоции"></div>
         <h3 class="sub">Пол <span class="muted">необязательно</span></h3>
         <div class="chips" id="gender" role="radiogroup" aria-label="Пол">
           <button type="button" class="chip on" role="radio" aria-checked="true" data-v="">Не указывать</button>
@@ -99,11 +98,18 @@
       <button type="button" class="btn quiet" id="again-btn">Сделать ещё</button>
     </div>
     <p class="notice warn" id="res-err" role="alert" hidden></p>
-    <div class="grid res" id="res-grid"></div>
+    <div id="res-grid"></div>
   </section>
 
   <footer class="foot hint">Прозрачные PNG 512×512. Сгенерировано нейросетью: возможны неточности.</footer>
 </main>
+<div class="lb" id="lightbox" hidden role="dialog" aria-modal="true" aria-label="Стикер крупно">
+  <div class="lb-body">
+    <button type="button" class="lb-close" aria-label="Закрыть">×</button>
+    <div class="lb-pic"><img alt=""></div>
+    <div class="lb-cap"><span></span><a class="btn small" download>Скачать</a></div>
+  </div>
+</div>
 <script type="module" src="js/app.js"></script>
 </body>
 </html>

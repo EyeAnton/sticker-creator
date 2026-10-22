@@ -16,7 +16,7 @@ check() { # описание, ожидаемое, фактическое
 
 # «JPEG»: правильные первые байты FF D8 FF, Worker картинки не декодирует; суффикс делает файлы разными
 mkjpg() { printf '\xff\xd8\xff\xe0smoke-%s\xff\xd9' "$1" > "$TMP/$1.jpg"; }
-mkjpg a; mkjpg b; mkjpg c
+mkjpg a; mkjpg b; mkjpg c; mkjpg d
 
 DEV=smoke-device-$RANDOM$RANDOM$RANDOM
 post() { # файл, эмоции, пол [, device] → тело в $TMP/out, код в stdout
@@ -46,11 +46,10 @@ echo "== config"
 curl -s -H "Origin: $ORIGIN" "$BASE/api/config?device=$DEV" | tee "$TMP/cfg"; echo
 check open True "$(jget "d['open']" < "$TMP/cfg")"
 check canCreate True "$(jget "d['canCreate']" < "$TMP/cfg")"
-check maxEmotions 10 "$(jget "d['maxEmotions']" < "$TMP/cfg")"
+check "эмоций в конфиге" 10 "$(jget "len(d['emotions'])" < "$TMP/cfg")"
 
 echo "== origin / bad input"
 check "POST без Origin" 403 "$(curl -s -o /dev/null -w '%{http_code}' -F photo=@$TMP/a.jpg -F emotions=wink -F turnstile=x "$BASE/api/jobs")"
-check "неизвестная эмоция" 400 "$(post a nope '')"
 check "без device" 400 "$(post a wink '' '')"
 
 echo "== пак 1: gender=stub-reject → rejected"
@@ -111,14 +110,22 @@ curl -s -D "$TMP/hdr" -o "$TMP/img.png" -H "Origin: $ORIGIN" "$BASE/api/jobs/$J/
 check "Content-Type" image/png "$(grep -i '^content-type' "$TMP/hdr" | tr -d '\r' | awk '{print $2}')"
 check "PNG-сигнатура" 89504e47 "$(head -c4 "$TMP/img.png" | xxd -p)"
 
-echo "== второй пак с того же device → 429 limit"
-check POST 429 "$(post c wink '')"
-check error limit "$(jget "d['error']" < "$TMP/out")"
-cat "$TMP/out"; echo
+echo "== пак 2 — все эмоции без выбора (поле emotions игнорируется)"
+check "стикеров в паке 2" 11 "$(jget "len(d['stickers'])" < "$TMP/job")"
+
+echo "== новый пак с того же device и IP — можно (старый закончен)"
+check POST 201 "$(post c wink '')"
+J3=$(jget "d['jobId']" < "$TMP/out")
+check "стикеров в паке 3" 11 "$(jget "len(d['stickers'])" < "$TMP/out")"
+check "пока идёт — второй с того же device → 429 busy" 429 "$(post d wink '')"
+check error busy "$(jget "d['error']" < "$TMP/out")"
 curl -s -H "Origin: $ORIGIN" "$BASE/api/config?device=$DEV" > "$TMP/cfg"
-check canCreate False "$(jget "d['canCreate']" < "$TMP/cfg")"
-echo "== другой device с того же IP → 429 (страховка по IP)"
-check POST 429 "$(post c wink '' other-device-$RANDOM$RANDOM$RANDOM)"
+check "canCreate пока идёт пак" False "$(jget "d['canCreate']" < "$TMP/cfg")"
+check reason busy "$(jget "d['reason']" < "$TMP/cfg")"
+poll "$J3"
+check "пак 3 done" done "$(jget "d['stage']" < "$TMP/job")"
+curl -s -H "Origin: $ORIGIN" "$BASE/api/config?device=$DEV" > "$TMP/cfg"
+check "canCreate после пака" True "$(jget "d['canCreate']" < "$TMP/cfg")"
 
 rm -rf "$TMP"
 echo; [ $FAILS -eq 0 ] && echo "SMOKE OK" || { echo "SMOKE: провалов $FAILS"; exit 1; }
