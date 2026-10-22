@@ -85,3 +85,4 @@
 .lb-cap { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 10px; color: var(--gray-100); }
 .lb-close { position: absolute; top: -14px; right: -6px; z-index: 1; width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--line); background: var(--card); color: var(--gray-100); font-size: 24px; line-height: 1; cursor: pointer; }
 @media (prefers-reduced-motion: reduce) { .tile { transition: none; } }
+.pack .jid { color: var(--muted); font-size: var(--fs-xs); font-weight: 400; user-select: all; word-break: break-all; }

@@ -5,6 +5,8 @@ import { toSticker } from './chroma.js';
 import { isInApp, asFiles, canShareFiles, shareFiles, download, zipAll } from './share.js';
 
 const $ = id => document.getElementById(id);
+// ?only=wink[,smile] — прогон только этих эмоций (дешёвый тест); сервер принимает только подмножество
+const ONLY = (new URLSearchParams(location.search).get('only') || '').split(',').map(x => x.trim()).filter(Boolean);
 const LEAD = 'Загрузите портрет — через пару минут стикеры со всеми эмоциями готовы для Telegram и мессенджеров.';
 const LABELS = { base: 'Базовый', wink: 'Подмигивание', kiss_heart: 'Поцелуй', heart_eyes: 'Влюблённый', hearts_around: 'Сердечки', halo: 'Ангел', laughing: 'Смех', tears: 'Слёзы', smile: 'Улыбка', demon: 'Чертёнок', blush: 'Смущение' };
 const label = id => LABELS[id] || id;
@@ -198,10 +200,11 @@ async function submit() {
     const f = new FormData();
     f.append('photo', blob, 'photo.jpg');
     f.append('gender', st.gender);
+    if (ONLY.length) f.append('emotions', ONLY.join(',')); // тестовый дешёвый прогон: ?only=wink
     f.append('device', deviceId());
     f.append('turnstile', st.token);
     const r = await api('/api/jobs', { method: 'POST', body: f });
-    st.job = { jobId: r.jobId, t: Date.now(), emotions: st.cfg.emotions };
+    st.job = { jobId: r.jobId, t: Date.now(), emotions: ONLY.length ? ONLY : st.cfg.emotions };
     writeJob(st.job); writeLast(st.job);
     startGen(r);
   } catch (e) {
@@ -270,6 +273,8 @@ async function inspect(j, jobId) {
     } catch { p = { attempt, failed: true }; }
     st.proc[s.id] = p;
     st.redraw.delete(s.id);
+    // в журнал задачи (tools/job_report.py): что показала заливка. Ошибка тут ни на что не влияет.
+    api(`/api/jobs/${jobId}/report`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: s.id, attempt, verdict: p.failed ? 'error' : p.verdict, removed: p.removed, leak: p.leak }) }).catch(() => {});
     if (!st.job || st.job.jobId !== jobId) return j;
   }
   for (const s of j.stickers) {
@@ -335,7 +340,7 @@ async function finish(j) {
   $('stage').textContent = 'Готовим прозрачные PNG…';
   // в пак — только стикеры, у которых заливка прошла проверку; базовый с браком просто не включается
   const n = addPack(st.job.jobId);
-  const mine = j.stickers.filter(s => isDone(s) && !stale(s) && !bad(s.id)).map(s => item(n, s.id, st.proc[s.id].blob));
+  const mine = j.stickers.filter(s => isDone(s) && !stale(s) && !bad(s.id)).map(s => item(n, s.id, st.proc[s.id].blob, st.job.jobId));
   if (!mine.length) {
     endGen({ stage: 'failed', message: 'Не удалось получить чистые картинки. Попробуйте сделать стикеры заново.' });
     return;
@@ -347,7 +352,7 @@ async function finish(j) {
 
 /* ---------- накопление паков: сервер хранит задачу сутки, номера и id паков — в localStorage ---------- */
 const PACKS_KEY = 'sc.packs';
-const item = (pack, id, blob) => ({ pack, id, blob, name: pack === 1 ? `${id}.png` : `p${pack}_${id}.png` });
+const item = (pack, id, blob, jobId) => ({ pack, id, blob, jobId, name: pack === 1 ? `${id}.png` : `p${pack}_${id}.png` });
 function readPacks() {
   try { return (JSON.parse(localStorage.getItem(PACKS_KEY)) || []).filter(p => p.jobId && Date.now() - p.t < JOB_TTL_MS); } catch { return []; }
 }
@@ -366,7 +371,7 @@ async function loadPack(p) {
     if (!r.ok) throw new Error('img');
     const t = await toSticker(await r.blob());
     if (t.verdict !== 'ok') throw new Error('bad');
-    return item(p.n, s.id, t.blob);
+    return item(p.n, s.id, t.blob, p.jobId);
   }));
   return got.filter(g => g.status === 'fulfilled').map(g => g.value);
 }
@@ -421,6 +426,8 @@ function showResult(lost, baseOut) {
     const sec = document.createElement('section'); sec.className = 'pack';
     sec.innerHTML = '<h3 class="sub"></h3><div class="pack-grid"></div>';
     sec.querySelector('h3').textContent = `Пак ${n} · ${items.length}`;
+    const jid = document.createElement('small'); jid.className = 'jid'; jid.textContent = items[0].jobId; jid.title = 'id задачи — для разбора: tools/job_report.py';
+    sec.querySelector('h3').append(' ', jid);
     const grid = sec.querySelector('.pack-grid');
     for (const s of items) {
       const url = URL.createObjectURL(s.blob); st.urls.push(url);

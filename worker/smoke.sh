@@ -49,6 +49,7 @@ check canCreate True "$(jget "d['canCreate']" < "$TMP/cfg")"
 check "эмоций в конфиге" 10 "$(jget "len(d['emotions'])" < "$TMP/cfg")"
 
 echo "== origin / bad input"
+check "неизвестная эмоция" 400 "$(post a nope '')"
 check "POST без Origin" 403 "$(curl -s -o /dev/null -w '%{http_code}' -F photo=@$TMP/a.jpg -F emotions=wink -F turnstile=x "$BASE/api/jobs")"
 check "без device" 400 "$(post a wink '' '')"
 
@@ -105,18 +106,27 @@ check "stage done" done "$(jget "d['stage']" < "$TMP/out")"
 curl -s -H "Origin: $ORIGIN" "$BASE/api/jobs/$J" > "$TMP/job"
 check "wink failed после GET" failed "$(sticker wink state)"
 check "failed → retry 409" 409 "$(retry "$J" wink leak)"
+report() { # jobId, id, verdict → код
+  curl -s -o "$TMP/out" -w '%{http_code}' -X POST -H "Origin: $ORIGIN" -H 'Content-Type: application/json' \
+    -d "{\"id\":\"$2\",\"attempt\":1,\"verdict\":\"$3\",\"removed\":0.5,\"leak\":0}" "$BASE/api/jobs/$1/report"
+}
+echo "== report: итог заливки из браузера в журнал"
+check "report ok" 200 "$(report "$J" wink ok)"
+check "report мусорный verdict" 400 "$(report "$J" wink nonsense)"
+check "report чужой стикер" 404 "$(report "$J" nope ok)"
+
 echo "== картинка (стрим)"
 curl -s -D "$TMP/hdr" -o "$TMP/img.png" -H "Origin: $ORIGIN" "$BASE/api/jobs/$J/img/demon"
 check "Content-Type" image/png "$(grep -i '^content-type' "$TMP/hdr" | tr -d '\r' | awk '{print $2}')"
 check "PNG-сигнатура" 89504e47 "$(head -c4 "$TMP/img.png" | xxd -p)"
 
-echo "== пак 2 — все эмоции без выбора (поле emotions игнорируется)"
-check "стикеров в паке 2" 11 "$(jget "len(d['stickers'])" < "$TMP/job")"
+echo "== пак 2 — тестовое подмножество эмоций (wink,demon → base + 2)"
+check "стикеров в паке 2" 3 "$(jget "len(d['stickers'])" < "$TMP/job")"
 
 echo "== новый пак с того же device и IP — можно (старый закончен)"
 check POST 201 "$(post c wink '')"
 J3=$(jget "d['jobId']" < "$TMP/out")
-check "стикеров в паке 3" 11 "$(jget "len(d['stickers'])" < "$TMP/out")"
+check "стикеров в паке 3" 2 "$(jget "len(d['stickers'])" < "$TMP/out")"
 check "пока идёт — второй с того же device → 429 busy" 429 "$(post d wink '')"
 check error busy "$(jget "d['error']" < "$TMP/out")"
 curl -s -H "Origin: $ORIGIN" "$BASE/api/config?device=$DEV" > "$TMP/cfg"
