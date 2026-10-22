@@ -6,6 +6,7 @@ const WMIN = 200, WSAT = 40;  // «белое»: min(r,g,b) ≥ 200 и max−min
 const BAND = 2;               // пояс у границы фона, px: альфа по проекции «фон → белый», цвет белый (он же despill)
 const FAR = 6;                // для оценки цвета фона берём пиксели не ближе FAR px к фигуре
 const EDGE0 = 0.15, EDGE1 = 0.85;
+const SEED_MIN = 35, SEED_MAX = 70; // порог похожести краевого пикселя на фон при засеве, расстояние в RGB
 // зона лица: квадрат 20% стороны, центр (50%, 45%)
 const FACE = Math.floor(STICKER * 20 / 100);
 const FACE_X = (STICKER - FACE) >> 1, FACE_Y = Math.floor(STICKER * 0.45) - (FACE >> 1);
@@ -35,8 +36,7 @@ function median(hist, n) {
 }
 
 // Заливка на месте: data — RGBA 512×512 (ImageData.data). Возвращает статистику и вердикт.
-// Обводка, упирающаяся в край кадра, ничем не особенна: белые пиксели края не засеиваются, а фон по обе стороны от
-// касания засеивается со своих краевых пикселей; фон, целиком отрезанный обводкой от краёв, остаётся (это не фон).
+// Фон, целиком отрезанный обводкой от краёв, остаётся (это не фон). Фигура, обрезанная краем кадра, не должна быть засеяна — см. засев.
 export function fillCut(data, w = STICKER, h = STICKER) {
   const n = w * h;
   const white = new Uint8Array(n);
@@ -46,12 +46,25 @@ export function fillCut(data, w = STICKER, h = STICKER) {
     white[i] = mn >= WMIN && mx - mn <= WSAT ? 1 : 0;
   }
 
-  // BFS (4-соседство) от небелых пикселей края
+  // Засев: небелые пиксели края, похожие на цвет фона. Фигура на кадре может быть обрезана краем (плечи внизу) —
+  // там нет обводки, и без этого фильтра пиксели тела (кожа, тени на рубашке) стали бы «фоном» и залив прошёл бы в лицо.
+  const border = [];
+  for (let x = 0; x < w; x++) border.push(x, (h - 1) * w + x);
+  for (let y = 1; y < h - 1; y++) border.push(y * w, y * w + w - 1);
+  const cand = border.filter(i => !white[i]);
   const bg = new Uint8Array(n), q = new Int32Array(n);
   let qh = 0, qt = 0;
+  if (cand.length) {
+    const hist = [new Uint32Array(256), new Uint32Array(256), new Uint32Array(256)];
+    for (const i of cand) for (let c = 0; c < 3; c++) hist[c][data[i * 4 + c]]++;
+    const ref = hist.map(hh => median(hh, cand.length));
+    const dist = cand.map(i => Math.hypot(data[i * 4] - ref[0], data[i * 4 + 1] - ref[1], data[i * 4 + 2] - ref[2]));
+    // порог — от разброса самого фона (ровный зелёный: малый, серая текстура: больше); фон занимает большую часть края
+    const sorted = Float32Array.from(dist).sort();
+    const T = Math.min(SEED_MAX, Math.max(SEED_MIN, 2.2 * sorted[Math.floor(sorted.length * 0.6)]));
+    cand.forEach((i, k) => { if (dist[k] <= T && !bg[i]) { bg[i] = 1; q[qt++] = i; } });
+  }
   const seed = i => { if (!white[i] && !bg[i]) { bg[i] = 1; q[qt++] = i; } };
-  for (let x = 0; x < w; x++) { seed(x); seed((h - 1) * w + x); }
-  for (let y = 0; y < h; y++) { seed(y * w); seed(y * w + w - 1); }
   while (qh < qt) {
     const i = q[qh++], x = i % w, y = (i / w) | 0;
     if (y > 0) seed(i - w);

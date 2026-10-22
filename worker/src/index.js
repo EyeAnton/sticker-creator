@@ -1,10 +1,10 @@
-import { EMOTION_IDS, createJob, advance, retryEmotion, publicJob, spend, runsLeft, today } from "./pipeline.js";
+import { EMOTION_IDS, createJob, advance, retryEmotion, logEvent, publicJob, spend, runsLeft, today } from "./pipeline.js";
 import { fetchImage } from "./provider.js";
 import { gate } from "./gate.js";
 export { Gate } from "./gate.js";
 
 const MAX_PHOTO = 1.5 * 1024 * 1024;
-const JOB_TTL = 24 * 3600;
+const JOB_TTL = 7 * 86400; // страница показывает пак сутки, остальное время задача нужна как журнал (job_report)
 
 const TEXT = {
   bad_input: "Не удалось разобрать запрос. Обновите страницу и попробуйте ещё раз.",
@@ -194,7 +194,11 @@ async function handleCreate(request, env) {
   if (!photo || typeof photo === "string") return err(request, env, 400, "bad_input");
   if (photo.size > MAX_PHOTO) return err(request, env, 413, "too_large");
 
-  const emotions = EMOTION_IDS; // выбора эмоций нет: всегда все (поле emotions в запросе игнорируется)
+  // Выбора эмоций в интерфейсе нет: всегда все. Необязательное поле emotions — только подмножество (дешёвый тестовый прогон,
+  // например ?only=wink на странице): удорожить пак им нельзя.
+  const asked = String(form.get("emotions") || "").split(",").map((x) => x.trim()).filter(Boolean);
+  if (asked.length && (new Set(asked).size !== asked.length || !asked.every((e) => EMOTION_IDS.includes(e)))) return err(request, env, 400, "bad_input");
+  const emotions = asked.length ? asked : EMOTION_IDS;
 
   // "stub-reject" / "stub-base-qa" — только для проверки веток в stub-режиме (отказ validate / брак QA базы)
   const gender = String(form.get("gender") || "");
@@ -329,6 +333,38 @@ async function handleRetry(request, env, jobId, sid) {
   }
 }
 
+// Результат проверки заливки в браузере (для журнала): {id, attempt, verdict, removed, leak}. Ничего не двигает.
+async function handleReport(request, env, jobId) {
+  const origin = request.headers.get("Origin");
+  if (!origin || !allowedOrigins(env).includes(origin)) return err(request, env, 403, "origin");
+  if (Number(request.headers.get("Content-Length")) > 1024) return err(request, env, 413, "too_large");
+  let b;
+  try {
+    b = JSON.parse(await request.text());
+  } catch {
+    return err(request, env, 400, "bad_input");
+  }
+  const num = (v) => (typeof v === "number" && isFinite(v) ? Math.round(v * 1000) / 1000 : null);
+  if (!b || typeof b.id !== "string" || !/^[a-z_]{1,32}$/.test(b.id) || !["ok", "leak", "nobg", "error"].includes(b.verdict)) return err(request, env, 400, "bad_input");
+  const g = gate(env, "job:" + jobId);
+  const seq = await g.lock(LOCK_MS);
+  if (seq === null) return err(request, env, 409, "job_busy");
+  let next;
+  try {
+    const job = await loadJob(env, jobId);
+    if (!job || !job.stickers[b.id]) return err(request, env, 404, "not_found");
+    if ((job.seq || 0) < seq) return err(request, env, 409, "job_busy");
+    if ((job.log || []).filter((e) => e.ev === "fill").length >= 100) return json(request, env, { ok: true });
+    logEvent(job, "fill", { id: b.id, attempt: num(b.attempt), verdict: b.verdict, removed: num(b.removed), leak: num(b.leak) });
+    job.seq = Math.max(seq, job.seq || 0) + 1;
+    await env.JOBS.put("job:" + jobId, JSON.stringify(job), { expirationTtl: JOB_TTL });
+    next = job.seq;
+    return json(request, env, { ok: true });
+  } finally {
+    await g.unlock(next).catch(() => {});
+  }
+}
+
 async function handleImage(request, env, jobId, sid) {
   const job = await loadJob(env, jobId);
   const s = job && job.stickers[sid];
@@ -358,6 +394,7 @@ export default {
       if (request.method === "POST" && path === "/api/jobs") return await handleCreate(request, env);
       let m;
       if (request.method === "GET" && (m = path.match(/^\/api\/jobs\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/))) return await handleStatus(request, env, m[1]);
+      if (request.method === "POST" && (m = path.match(/^\/api\/jobs\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/report$/))) return await handleReport(request, env, m[1]);
       if (request.method === "POST" && (m = path.match(/^\/api\/jobs\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/retry\/([a-z_]{1,32})$/))) return await handleRetry(request, env, m[1], m[2]);
       if (request.method === "GET" && (m = path.match(/^\/api\/jobs\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/img\/([a-z_]{1,32})$/))) return await handleImage(request, env, m[1], m[2]);
       return err(request, env, 404, "not_found");

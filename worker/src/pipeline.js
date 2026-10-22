@@ -8,6 +8,15 @@ const MAX_ATTEMPTS = 4;
 const MAX_BASE_QA = 2; // генераций базового стикера из-за QA (плюс один повтор при ошибке запроса — restyleRetry)
 const RESTYLE_PAUSE_MS = 5000;
 
+// Журнал задачи (в самой задаче, до LOG_MAX событий): что и когда было запущено/получено, адреса картинок, ответы QA.
+// Наружу не отдаётся (publicJob его не включает), читается из KV: tools/job_report.py <jobId>.
+const LOG_MAX = 400;
+const clip = (v, n = 600) => String(v ?? "").slice(0, n);
+export function logEvent(job, ev, data = {}) {
+  (job.log ||= []).push({ t: Math.floor(Date.now() / 1000), ev, ...data });
+  if (job.log.length > LOG_MAX) job.log.splice(0, job.log.length - LOG_MAX);
+}
+
 const MSG = {
   upstream: "Сервис генерации сейчас недоступен. Попробуйте чуть позже.",
   closed: "На сегодня лимит генераций исчерпан. Загляните завтра.",
@@ -64,12 +73,14 @@ function cleanReason(v) {
 async function reject(env, job, message) {
   job.stage = "rejected";
   job.message = message;
+  logEvent(job, "rejected", { message });
   await env.JOBS.put("rejected:" + job.photoHash, "1", { expirationTtl: 30 * 86400 });
 }
 
 function fail(job, message) {
   job.stage = "failed";
   job.message = message;
+  logEvent(job, "failed", { message });
 }
 
 // Создание пака: загрузка фото, старт validate. Бросает при ошибке провайдера (→ 502 upstream).
@@ -78,7 +89,7 @@ export async function createJob(env, { photo, photoHash, gender, emotions }) {
   const task = await startTask(env, "validate", { image: ref, meta: gender });
   const stickers = { base: { state: "queued" } };
   for (const id of emotions) stickers[id] = { state: "queued" };
-  return {
+  const job = {
     created: Math.floor(Date.now() / 1000),
     gender,
     photoHash,
@@ -88,6 +99,8 @@ export async function createJob(env, { photo, photoHash, gender, emotions }) {
     restyleRetry: 0,
     stickers,
   };
+  logEvent(job, "start", { gender, emotions, photo: ref });
+  return job;
 }
 
 // Статус для клиента.
@@ -112,6 +125,7 @@ async function stepValidate(env, job) {
   if (t.state === "queued" || t.state === "running") return;
   if (t.state === "failed") return fail(job, MSG.validateFail);
   const r = parseStatus(t.text);
+  logEvent(job, "validate", { text: clip(t.text), status: r ? r.status : null });
   if (!r) return fail(job, MSG.validateFail);
   if (r.status !== 0) {
     const reason = cleanReason(r.failureReason);
@@ -139,6 +153,7 @@ async function stepRestyle(env, job) {
   if (base.qaTask) return stepBaseQa(env, job, base);
   const t = await getTask(env, base.task);
   if (t.state === "queued" || t.state === "running") return;
+  logEvent(job, "restyle", { state: t.state, url: t.url, refused: !!t.refused, error: t.error && clip(t.error, 200) });
   if (t.refused) return reject(env, job, MSG.refused);
   if (t.state === "failed" || !t.url) {
     if (job.restyleRetry === 0) {
@@ -163,6 +178,7 @@ async function stepBaseQa(env, job, base) {
   const t = await getTask(env, base.qaTask);
   if (t.state === "queued" || t.state === "running") return;
   const r = t.state === "done" ? parseStatus(t.text) : null;
+  logEvent(job, "qa", { id: "base", gen: (job.baseQaFails || 0) + 1, pass: !!(r && r.status === 0), text: clip(t.text), url: base.url });
   if (!(r && r.status === 0)) {
     job.baseQaFails = (job.baseQaFails || 0) + 1;
     if (job.baseQaFails >= MAX_BASE_QA) {
@@ -184,15 +200,18 @@ async function stepBaseQa(env, job, base) {
 export async function startAttempt(env, job, id, s, reason) {
   if (s.attempt >= MAX_ATTEMPTS) {
     s.state = "failed";
+    logEvent(job, "sticker_failed", { id, why: "attempts" });
     return;
   }
   if (!(await spend(env))) {
     s.state = "failed";
+    logEvent(job, "sticker_failed", { id, why: "runs_day" });
     return;
   }
   s.attempt += 1;
   s.model = nextModel(s.model, reason);
   const prompt = prompts.emotions.find((e) => e.id === id).prompt;
+  logEvent(job, "attempt", { id, attempt: s.attempt, model: s.model, reason: reason || null });
   s.genTask = await startTask(env, "emotion", {
     image: job.stickers.base.url, prompt, model: s.model, meta: `${id}#${s.attempt}`,
   });
@@ -205,6 +224,7 @@ async function stepEmotion(env, job, id, s) {
   if (s.phase === "gen") {
     const t = await getTask(env, s.genTask);
     if (t.state === "queued" || t.state === "running") return;
+    logEvent(job, "gen", { id, attempt: s.attempt, model: s.model, state: t.state, url: t.url, refused: !!t.refused, error: t.error && clip(t.error, 200) });
     if (t.refused) return startAttempt(env, job, id, s, "refused");
     if (t.state === "failed" || !t.url) return startAttempt(env, job, id, s, "error");
     if (!(await spend(env))) {
@@ -221,6 +241,7 @@ async function stepEmotion(env, job, id, s) {
   const t = await getTask(env, s.qaTask);
   if (t.state === "queued" || t.state === "running") return;
   const r = t.state === "done" ? parseStatus(t.text) : null;
+  logEvent(job, "qa", { id, attempt: s.attempt, pass: !!(r && r.status === 0), text: clip(t.text), url: s.url });
   if (r && r.status === 0) {
     s.state = "done";
     return;
@@ -233,6 +254,7 @@ async function stepEmotion(env, job, id, s) {
 // Бросает при ошибке провайдера — стикер остаётся как был. Лимит попыток и RUNS_DAY — внутри startAttempt.
 export async function retryEmotion(env, job, id, reason) {
   const s = job.stickers[id];
+  logEvent(job, "retry", { id, attempt: s.attempt, reason });
   const prev = { ...s };
   Object.assign(s, { state: "running", lastFail: reason });
   try {
@@ -255,7 +277,10 @@ export async function advance(env, job) {
     const pending = Object.entries(job.stickers).filter(([id, s]) => id !== "base" && s.state === "running");
     // последовательно: счётчик runs в KV не атомарный
     for (const [id, s] of pending) await stepEmotion(env, job, id, s);
-    if (!Object.entries(job.stickers).some(([id, s]) => id !== "base" && s.state === "running")) job.stage = "done";
+    if (!Object.entries(job.stickers).some(([id, s]) => id !== "base" && s.state === "running")) {
+      job.stage = "done";
+      logEvent(job, "done", {});
+    }
   }
   return JSON.stringify(job) !== before;
 }

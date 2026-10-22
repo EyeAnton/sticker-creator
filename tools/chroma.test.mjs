@@ -20,6 +20,21 @@ function scene({ bg, cx = 256, cy = 256, rx = 150, ry = 190, hole = null, outlin
   }
   return d;
 }
+// фигура с плечами, обрезанная нижним краем кадра: внизу обводки нет, на краю — кожа и тёмная одежда (небелые пиксели тела)
+function bust({ bg, outline = true }) {
+  const d = new Uint8ClampedArray(S * S * 4);
+  const inFig = (x, y, g) => Math.hypot((x - 256) / (130 + g), (y - 200) / (160 + g)) <= 1 || (x >= 120 - g && x <= 392 + g && y >= 330 - g);
+  for (let y = 0; y < S; y++) {
+    for (let x = 0; x < S; x++) {
+      let c;
+      if (inFig(x, y, 0)) c = y > 400 ? ((x >> 4) % 2 ? [40, 45, 60] : [200, 150, 120]) : [196, 140, 110];
+      else if (outline && inFig(x, y, 10)) c = [255, 255, 255];
+      else c = bg(x, y);
+      d.set([c[0], c[1], c[2], 255], (y * S + x) * 4);
+    }
+  }
+  return d;
+}
 const noise = (x, y) => ((x * 7919 + y * 104729) % 41) - 20; // детерминированный «текстурный» шум ±20
 const green = () => [0, 255, 0];
 const grayFlat = () => [128, 128, 128];
@@ -34,6 +49,9 @@ const cases = [
   ["белый фон", scene({ bg: white }), "nobg"],
   ["обводка касается края", scene({ bg: grayTex, cx: 256, rx: 246, ry: 190 }), "ok"],
   ["обводка в углу (фон в кармане)", scene({ bg: green, cx: 256, cy: 256, rx: 246, ry: 246 }), "ok"],
+  ["плечи обрезаны краем, зелёный", bust({ bg: green }), "ok"],
+  ["плечи обрезаны краем, серый текстурный", bust({ bg: grayTex }), "ok"],
+  ["нет обводки совсем (брак модели)", bust({ bg: green, outline: false }), "leak"],
 ];
 
 console.log("случай".padEnd(34), "убрано  лицо-протечка  вердикт");
